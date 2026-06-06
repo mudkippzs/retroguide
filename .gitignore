@@ -1,0 +1,29 @@
+# Virtualenv
+.venv/
+venv/
+env/
+
+# Your personal config (paths, keys) -- ship only config.example.toml
+config.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Runtime data: catalog/schedule DB, logs, HLS temp segments
+*.db
+*.db-journal
+*.db-wal
+*.log
+logs/
+data/
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/

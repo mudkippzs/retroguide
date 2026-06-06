@@ -1,0 +1,82 @@
+# RetroGuide configuration.
+# Copy to config.toml and edit. Anything you omit falls back to these defaults.
+
+[library]
+# Network-accessible roots to index.
+tv_roots = ["/mnt/tv"]
+movie_roots = ["/mnt/movies"]
+# File extensions treated as playable media.
+video_extensions = [".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts", ".m2ts", ".wmv", ".mpg", ".mpeg"]
+# Substrings that mark a file/folder as junk and exclude it from the catalog.
+exclude_patterns = ["sample", "trailer", "$RECYCLE.BIN", ".parts", "featurette", "behind the scenes", "extras"]
+# Skip files smaller than this (MB) -- usually samples/junk.
+min_file_mb = 50
+
+[ollama]
+host = "http://127.0.0.1:11434"
+# Model used to write retro-guide blurbs and classify content.
+model = "mistral-small3.2:latest"
+# Embedding model (reserved for fuzzy title matching / dedupe).
+embed_model = "nomic-embed-text:latest"
+# Seconds to wait on a generation call before giving up.
+timeout = 120
+
+[tmdb]
+# OPTIONAL. TMDB now asks for billing details at signup, so by default
+# RetroGuide uses TVmaze instead -- a completely free, no-key, no-billing
+# source with great per-episode data and a show "type" field (Animation/
+# Scripted/Reality) that classifies cartoons well. Leave this blank to use
+# TVmaze for TV (films then lean on the local model). Only set a key if you
+# already have TMDB access and want its film metadata too.
+api_key = ""
+language = "en-US"
+
+[schedule]
+# Day the 7-day guide starts on ("today" or a weekday name like "saturday").
+start = "today"
+days = 7
+# Wall-clock hour (0-23) the broadcast day begins. Late-night content before
+# this hour belongs to the previous broadcast day.
+day_start_hour = 6
+timezone = "local"
+# Seasonal & spontaneous special-event programming. When on, holidays and the
+# odd weekend stunt take over The Movie Channel for the day (Christmas cinema,
+# a May-4th Star Wars bonanza, a Marvel origins weekend, etc.).
+events = true
+
+[ui]
+# "dark-arc" Stark HUD is the only theme for now.
+theme = "dark-arc"
+default_view = "magazine"   # "magazine" or "grid"
+# Retro look. era styles the LAN web view (and seeds the desktop toggles);
+# crt draws CRT scanlines/vignette; bw desaturates the *picture only*
+# (simulating a black-and-white set, leaving the UI in colour).
+era = "90s"                 # "70s" | "80s" | "90s" | "00s"
+crt = true
+bw = false
+
+# Per-channel overrides. Key = channel slug (toonworld, prime, maxx, chuckle,
+# cinema, niteowl). Rename channels and/or give them a logo bug. Omit a slug
+# to keep the built-in default; logos default to none.
+[channels]
+# toonworld = "Cartoon Cavalcade"
+
+[channel_logos]
+# toonworld = "/mnt/media/logos/toonworld.png"
+
+[stream]
+# LAN broadcast: hit "Stream" in the app (or run `retroguide serve`) to watch
+# the live channels from any browser on your network -- you join whatever is
+# airing right now, just like real TV.
+port = 8722
+bind = "0.0.0.0"            # 0.0.0.0 = reachable from other devices on the LAN
+# Transcode to H.264/AAC so browsers can play HEVC/10-bit files. Set to false
+# to remux (copy) instead -- far lighter on CPU if your library is already H.264.
+transcode = true
+# Cap on simultaneous transcodes (each is a CPU-heavy ffmpeg). Beyond this,
+# extra tune-ins get a brief "server busy" and retry -- protects the host.
+max_streams = 4
+# Serve HLS to Apple devices (iOS/macOS Safari can't play the progressive MP4
+# stream). Other browsers keep using the lower-latency MP4 path. One shared
+# ffmpeg per channel, capped by max_streams above.
+hls = true
