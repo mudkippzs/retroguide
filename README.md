@@ -17,8 +17,7 @@ reruns, no licensing — and it grows on its own as you add to your collection.
 > subscriptions, no "not available in your region". You don't manage a watch
 > list; new files just get woven into the schedule over time.
 
-<!-- Drop a screenshot at docs/screenshot.png and uncomment:
-![RetroGuide](docs/screenshot.png) -->
+![RetroGuide](docs/screenshot.png)
 
 ## Features
 
