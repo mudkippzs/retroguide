@@ -119,6 +119,7 @@ class MainWindow(QWidget):
         self.guide_panel = self._build_guide_panel()
         self.library = LibraryPanel(self.conn)
         self.library.playRequested.connect(self._binge_play_from_top)
+        self.library.ruleChanged.connect(self.status_lbl.setText)
         # Binge playback state: expanded queue + cursor, active in Binge mode.
         self._binge_mode = False
         self._binge_queue: list = []

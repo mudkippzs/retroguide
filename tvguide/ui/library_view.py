@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
 
 from . import theme
 from ..binge import playlist
+from ..schedule import rules as sched_rules
 from ..util.media_ok import PLAYABLE_SQL
 from .widgets import fmt_duration
 
@@ -108,6 +109,7 @@ class LibraryPanel(QFrame):
     wants the queue on the screen."""
     playRequested = Signal()
     queueChanged = Signal()
+    ruleChanged = Signal(str)   # human-readable note for the status line
 
     def __init__(self, conn: sqlite3.Connection, parent: QWidget | None = None):
         super().__init__(parent)
@@ -409,13 +411,75 @@ class LibraryPanel(QFrame):
         node = self.tree.itemAt(pos)
         if node is None:
             return
-        kind, title_id, _s, _e = node.data(0, _ROLE)
+        kind, title_id, season, _e = node.data(0, _ROLE)
         if kind in (None, "root") or title_id is None:
             return
         menu = QMenu(self)
-        act = menu.addAction("Add to queue")
-        if menu.exec(self.tree.viewport().mapToGlobal(pos)) == act:
+        add_act = menu.addAction("Add to queue")
+        rule_acts: dict[object, tuple] = {}
+        if kind == "season" and season and season > 0:
+            menu.addSeparator()
+            a = menu.addAction(f"Start rotation at Season {season}")
+            a.setToolTip("The TV schedule will never rotate earlier than "
+                         "this season (applies on next Rebuild)")
+            rule_acts[a] = ("start", season)
+        if kind in ("series", "season"):
+            if sched_rules.get_start_season(self.conn, title_id) is not None:
+                a = menu.addAction("Clear rotation start")
+                rule_acts[a] = ("start", None)
+            menu.addSeparator()
+            rule_acts.update(self._channel_rule_menus(menu, title_id))
+        picked = menu.exec(self.tree.viewport().mapToGlobal(pos))
+        if picked == add_act:
             self._add_node(node)
+        elif picked in rule_acts:
+            self._apply_rule(title_id, *rule_acts[picked])
+
+    def _channel_rule_menus(self, menu: QMenu, title_id: int) -> dict:
+        channels = self.conn.execute(
+            "SELECT slug, name FROM channels ORDER BY position").fetchall()
+        if not channels:
+            return {}
+        current = sched_rules.rules_for_title(self.conn, title_id)
+        acts: dict[object, tuple] = {}
+        pin = menu.addMenu("Pin to channel…")
+        block = menu.addMenu("Block from channel…")
+        for ch in channels:
+            mark = " ✓" if current.get(ch["slug"]) == "allow" else ""
+            a = pin.addAction(ch["name"] + mark)
+            a.setToolTip("This show airs ONLY on this channel, and the "
+                         "channel's series slots air only pinned shows")
+            acts[a] = ("channel", ch["slug"], "allow")
+            mark = " ✓" if current.get(ch["slug"]) == "block" else ""
+            a = block.addAction(ch["name"] + mark)
+            a.setToolTip("Never air this show on this channel")
+            acts[a] = ("channel", ch["slug"], "block")
+        if current:
+            clear = menu.addMenu("Clear channel rule…")
+            for ch in channels:
+                if ch["slug"] in current:
+                    a = clear.addAction(ch["name"])
+                    acts[a] = ("channel", ch["slug"], None)
+        return acts
+
+    def _apply_rule(self, title_id: int, scope: str, *args) -> None:
+        name = self.conn.execute(
+            "SELECT name FROM titles WHERE id=?", (title_id,)).fetchone()["name"]
+        if scope == "start":
+            season = args[0]
+            sched_rules.set_start_season(self.conn, title_id, season)
+            note = (f"{name}: rotation starts at Season {season}"
+                    if season is not None else f"{name}: rotation start cleared")
+        else:
+            slug, mode = args
+            sched_rules.set_channel_rule(self.conn, title_id, slug, mode)
+            ch = self.conn.execute(
+                "SELECT name FROM channels WHERE slug=?", (slug,)).fetchone()
+            ch_name = ch["name"] if ch else slug
+            note = {"allow": f"{name}: pinned to {ch_name}",
+                    "block": f"{name}: blocked from {ch_name}",
+                    None: f"{name}: rule on {ch_name} cleared"}[mode]
+        self.ruleChanged.emit(note + " — applies on next Rebuild")
 
     def _queue_menu(self, pos) -> None:  # noqa: ANN001
         row = self.queue_list.itemAt(pos)

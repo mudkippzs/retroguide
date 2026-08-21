@@ -133,6 +133,21 @@ CREATE TABLE IF NOT EXISTS playlist_items (
 );
 
 CREATE INDEX IF NOT EXISTS idx_playlist_items ON playlist_items(playlist_id, position);
+
+-- Scheduling control: per-title rotation start and per-channel allow/block.
+CREATE TABLE IF NOT EXISTS title_rules (
+    title_id      INTEGER PRIMARY KEY,
+    start_season  INTEGER,                  -- rotation starts at this season
+    FOREIGN KEY(title_id) REFERENCES titles(id)
+);
+
+CREATE TABLE IF NOT EXISTS channel_rules (
+    channel_slug  TEXT NOT NULL,
+    title_id      INTEGER NOT NULL,
+    mode          TEXT NOT NULL,            -- 'allow' | 'block'
+    UNIQUE(channel_slug, title_id),
+    FOREIGN KEY(title_id) REFERENCES titles(id)
+);
 """
 
 

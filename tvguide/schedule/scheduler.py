@@ -76,6 +76,11 @@ class Scheduler:
         # Channels that program children's buckets need age-appropriate
         # pad films (no horror/war features filling in for cartoons).
         self._kids_channels: set[str] = set()
+        # User scheduling rules: per-title rotation start season, and
+        # per-channel allow/block lists (series only; film slots unaffected).
+        self._start_seasons: dict[int, int] = {}
+        self._channel_allow: dict[str, set[int]] = {}
+        self._channel_block: dict[str, set[int]] = {}
 
     # -- setup --------------------------------------------------------------
     def seed_channels(self) -> dict[str, int]:
@@ -99,6 +104,7 @@ class Scheduler:
         return ids
 
     def _load_pools(self) -> None:
+        self._load_rules()
         # Discover which tags own a dedicated channel.
         for ch in CHANNELS:
             for seg in ch.weekday + ch.weekend:
@@ -127,6 +133,11 @@ class Scheduler:
                 if not ep["file_path"] or not os.path.isfile(ep["file_path"]):
                     continue
                 playable.append(ep)
+            # Manual override: earlier seasons leave the rotation entirely
+            # (not just the starting point — wrapping must not reach them).
+            start_s = self._start_seasons.get(s["id"])
+            if start_s is not None:
+                playable = [ep for ep in playable if ep["season"] >= start_s]
             if len(playable) < MIN_SERIES_EPS:
                 continue
             self._series_eps[s["id"]] = playable
@@ -170,6 +181,22 @@ class Scheduler:
         log.info("pools: %d series across %d buckets, %d films, tags=%s",
                  len(self._series_eps), len(self._series_by_bucket),
                  len(self._film_pool), sorted(self._film_by_tag))
+
+    def _load_rules(self) -> None:
+        """Read user scheduling rules (title_rules / channel_rules)."""
+        self._start_seasons = {
+            r["title_id"]: r["start_season"]
+            for r in self.conn.execute(
+                "SELECT title_id, start_season FROM title_rules "
+                "WHERE start_season IS NOT NULL")
+        }
+        self._channel_allow = {}
+        self._channel_block = {}
+        for r in self.conn.execute(
+                "SELECT channel_slug, title_id, mode FROM channel_rules"):
+            target = (self._channel_allow if r["mode"] == "allow"
+                      else self._channel_block)
+            target.setdefault(r["channel_slug"], set()).add(r["title_id"])
 
     # -- exclusive channel homes -------------------------------------------
     def _assign_series(self) -> None:
@@ -239,13 +266,67 @@ class Scheduler:
         for tid, slug in list(self._home.items()):
             log.debug("home %s -> %s", self._series_meta[tid]["name"], slug)
 
+        self._apply_channel_rules(bucket_homes)
+
+    def _apply_channel_rules(self, bucket_homes: dict[str, list[str]]) -> None:
+        """User allow/block lists, applied after automatic home assignment.
+
+        allow: pin the title to that channel (and _candidates restricts the
+        channel's series roster to its allowlist). block: never air on that
+        channel — re-home within the bucket if possible, else drop the title
+        from rotation entirely.
+        """
+        for slug, tids in self._channel_allow.items():
+            for tid in tids:
+                if tid in self._series_meta:
+                    self._home[tid] = slug
+        for slug, tids in self._channel_block.items():
+            for tid in tids:
+                if self._home.get(tid) != slug:
+                    continue
+                bucket = self._series_meta[tid]["bucket"] or "drama"
+                alts = [h for h in (bucket_homes.get(bucket)
+                                    or bucket_homes.get("drama") or [])
+                        if h != slug and tid not in self._channel_block.get(h, ())]
+                if alts:
+                    self._home[tid] = alts[0]
+                    log.info("rule: %s blocked on %s — re-homed to %s",
+                             self._series_meta[tid]["name"], slug, alts[0])
+                else:
+                    log.info("rule: %s blocked on %s — no other home, "
+                             "dropping from rotation",
+                             self._series_meta[tid]["name"], slug)
+                    self._drop_series(tid)
+
+    def _drop_series(self, tid: int) -> None:
+        self._home.pop(tid, None)
+        self._playheads.pop(tid, None)
+        self._series_eps.pop(tid, None)
+        meta = self._series_meta.pop(tid, None)
+        if meta is not None:
+            bucket = meta["bucket"] or "drama"
+            lst = self._series_by_bucket.get(bucket)
+            if lst:
+                self._series_by_bucket[bucket] = [
+                    s for s in lst if s["id"] != tid]
+
     # -- selection helpers --------------------------------------------------
     def _candidates(self, ch_slug: str, buckets: tuple[str, ...]) -> list[sqlite3.Row]:
-        """Series whose exclusive home is this channel, in the requested buckets."""
+        """Series whose exclusive home is this channel, in the requested buckets.
+
+        User rules apply: blocked titles never air here, and a channel with an
+        allowlist airs only allowlisted series.
+        """
+        allow = self._channel_allow.get(ch_slug)
+        blocked = self._channel_block.get(ch_slug, set())
         out: list[sqlite3.Row] = []
         for b in buckets:
             for s in self._series_by_bucket.get(b, []):
                 if self._home.get(s["id"]) != ch_slug:
+                    continue
+                if s["id"] in blocked:
+                    continue
+                if allow is not None and s["id"] not in allow:
                     continue
                 out.append(s)
         return out
