@@ -1,6 +1,7 @@
 """Walk the library roots and build the SQLite catalog."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re as _re
@@ -164,6 +165,7 @@ class Indexer:
         purged = self._purge_stale(seen_paths={str(fp) for _, fp in discovered})
         stats["purged"] = purged
         self._finalize_orders()
+        self._apply_bucket_overrides()
         progress("Scan complete", total, total)
         return stats
 
@@ -181,7 +183,14 @@ class Indexer:
                 gone.append(r["id"])
         if not gone:
             return 0
+        affected_titles: set[int] = set()
         for fid in gone:
+            for r in self.conn.execute(
+                    "SELECT title_id FROM episodes WHERE file_id=?", (fid,)):
+                affected_titles.add(r["title_id"])
+            for r in self.conn.execute(
+                    "SELECT id FROM titles WHERE movie_file_id=?", (fid,)):
+                affected_titles.add(r["id"])
             # Clear every FK that references media_files before the DELETE.
             # programs keeps a copy of file_id for playback; leaving it set
             # raises IntegrityError under PRAGMA foreign_keys=ON.
@@ -190,9 +199,35 @@ class Indexer:
             self.conn.execute(
                 "UPDATE titles SET movie_file_id=NULL WHERE movie_file_id=?", (fid,))
             self.conn.execute("DELETE FROM media_files WHERE id=?", (fid,))
+        self._purge_ghost_titles(affected_titles)
         self.conn.commit()
         log.info("purged %d stale/missing media_files", len(gone))
         return len(gone)
+
+    def _purge_ghost_titles(self, title_ids: set[int]) -> None:
+        """Drop titles that no longer own a single file.
+
+        Episode metadata is kept while the title still has other files (it
+        carries enriched names/overviews for when the missing file returns);
+        a title with nothing playable left is deleted outright so deleted
+        shows don't linger in the UI as 0-episode ghosts.
+        """
+        for tid in title_ids:
+            n_eps = self.conn.execute(
+                "SELECT COUNT(*) c FROM episodes "
+                "WHERE title_id=? AND file_id IS NOT NULL", (tid,),
+            ).fetchone()["c"]
+            has_film = self.conn.execute(
+                "SELECT 1 FROM titles WHERE id=? AND movie_file_id IS NOT NULL",
+                (tid,),
+            ).fetchone()
+            if n_eps or has_film:
+                continue
+            self.conn.execute("DELETE FROM episodes WHERE title_id=?", (tid,))
+            self.conn.execute("DELETE FROM playheads WHERE title_id=?", (tid,))
+            self.conn.execute("DELETE FROM programs WHERE title_id=?", (tid,))
+            self.conn.execute("DELETE FROM titles WHERE id=?", (tid,))
+            log.info("purged ghost title id=%d (no files remain)", tid)
 
     def reindex_from_db(self, progress: ProgressCb = _noop) -> dict:
         """Rebuild titles/episodes from already-discovered files (no network
@@ -206,6 +241,17 @@ class Indexer:
                 "JOIN titles t ON t.id=p.title_id WHERE t.kind='series'"
             )
             if (r["name"] or "").strip()
+        }
+        # Keep enrichment (tags, buckets, blurbs…) too: a parser-fix reindex
+        # must not force a full network re-enrich.
+        saved_titles = {
+            r["sort_name"]: dict(r)
+            for r in self.conn.execute(
+                "SELECT sort_name, bucket, tags, overview, genres, cast_json, "
+                "rating, blurb, tmdb_id, poster_path, runtime_hint, year, "
+                "enrich_state FROM titles"
+            )
+            if r["sort_name"]
         }
         self.conn.execute("DELETE FROM programs")
         self.conn.execute("DELETE FROM playheads")
@@ -226,20 +272,63 @@ class Indexer:
         self.conn.commit()
         self._finalize_orders()
         self._restore_playheads(saved_playheads)
+        self._restore_title_meta(saved_titles)
+        self._apply_bucket_overrides()
         progress("Reindex complete", total, total)
         return stats
+
+    @staticmethod
+    def _meta_key(name: str) -> str:
+        """Punctuation-insensitive match key: a rebuild may drop the colons a
+        provider added ("Star Trek: TNG" -> "Star Trek TNG")."""
+        return _re.sub(r"[^a-z0-9]+", "", (name or "").lower())
+
+    def _restore_title_meta(self, saved: dict[str, dict]) -> None:
+        """Re-apply enrichment fields to rebuilt titles, matched by sort_name."""
+        if not saved:
+            return
+        by_key = {self._meta_key(k): v for k, v in saved.items()}
+        for row in self.conn.execute("SELECT id, sort_name FROM titles"):
+            meta = saved.get(row["sort_name"]) or by_key.get(
+                self._meta_key(row["sort_name"]))
+            if not meta:
+                continue
+            self.conn.execute(
+                "UPDATE titles SET bucket=?, tags=?, overview=?, genres=?, "
+                "cast_json=?, rating=?, blurb=?, tmdb_id=?, poster_path=?, "
+                "runtime_hint=COALESCE(runtime_hint, ?), "
+                "year=COALESCE(year, ?), enrich_state=? WHERE id=?",
+                (meta["bucket"], meta["tags"], meta["overview"], meta["genres"],
+                 meta["cast_json"], meta["rating"], meta["blurb"],
+                 meta["tmdb_id"], meta["poster_path"], meta["runtime_hint"],
+                 meta["year"], meta["enrich_state"], row["id"]),
+            )
+        self.conn.commit()
+
+    def _apply_bucket_overrides(self) -> None:
+        """Config-declared bucket fixes win over heuristics and enrichers."""
+        from ..util.naming import sort_name
+        for name, bucket in (self.cfg.bucket_overrides or {}).items():
+            self.conn.execute(
+                "UPDATE titles SET bucket=? WHERE sort_name=?",
+                (bucket, sort_name(name)),
+            )
+        self.conn.commit()
 
     def _restore_playheads(self, saved: dict[str, int]) -> None:
         """Remap saved abs_order cursors onto rebuilt series by title name."""
         if not saved:
             return
+        by_key = {self._meta_key(k): v for k, v in saved.items()}
         for row in self.conn.execute(
             "SELECT id, name FROM titles WHERE kind='series'"
         ):
             key = (row["name"] or "").strip().lower()
-            if key not in saved:
+            cursor = saved.get(key)
+            if cursor is None:
+                cursor = by_key.get(self._meta_key(row["name"]))
+            if cursor is None:
                 continue
-            cursor = saved[key]
             # Clamp to a still-valid abs_order when the catalog shrank/grew.
             bounds = self.conn.execute(
                 "SELECT MIN(abs_order) AS lo, MAX(abs_order) AS hi "
@@ -337,9 +426,13 @@ class Indexer:
             # series special (S00) rather than inventing a movie title.
             series_name = self._series_name(fp, root_kind) or parsed.title
             tid = self._find_or_create_series(series_name, parsed.year)
-            # Synthesize a special slot from the filename hash so it doesn't
-            # collide with real episodes, and stays out of regular rotation.
-            ep_num = abs(hash(fp.name)) % 9000 + 100
+            # Synthesize a special slot from a *stable* filename digest so it
+            # doesn't collide with real episodes, stays out of regular
+            # rotation, and -- unlike hash(), which is randomized per process --
+            # produces the same number on every rescan instead of piling up
+            # duplicate rows.
+            digest = hashlib.md5(fp.name.encode()).hexdigest()
+            ep_num = int(digest[:8], 16) % 9000 + 100
             class _P:
                 season, episode, episode_title = 0, ep_num, parsed.title
             self._upsert_episode(tid, file_id, _P())
@@ -378,7 +471,9 @@ class Indexer:
         return cur.lastrowid
 
     def _upsert_episode(self, title_id: int, file_id: int, parsed) -> None:
-        season = parsed.season or 1
+        # Preserve season 0 (specials) -- `or 1` would silently promote bonus
+        # content into the regular rotation.
+        season = parsed.season if parsed.season is not None else 1
         episode = parsed.episode
         self.conn.execute(
             "INSERT INTO episodes(title_id,file_id,season,episode,name) "

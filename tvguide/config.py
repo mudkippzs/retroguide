@@ -32,7 +32,8 @@ class LibraryConfig:
             ".crdownload", "featurette", "behind the scenes", "extras",
         ]
     )
-    min_file_mb: int = 50
+    # 360p half-hour episodes run 30-45 MB; a higher floor drops whole seasons.
+    min_file_mb: int = 10
 
 
 @dataclass
@@ -104,6 +105,9 @@ class Config:
     # default name / no logo. Logos are absolute paths to an image file.
     channel_names: dict[str, str] = field(default_factory=dict)
     channel_logos: dict[str, str] = field(default_factory=dict)
+    # Title-name -> scheduling bucket fixes for mis-classified shows
+    # (e.g. "Father Ted BoxSet" = "sitcom"). Applied after scan/reindex/enrich.
+    bucket_overrides: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -121,6 +125,7 @@ class Config:
             stream=StreamConfig(**data.get("stream", {})),
             channel_names=dict(data.get("channels", {})),
             channel_logos=dict(data.get("channel_logos", {})),
+            bucket_overrides=dict(data.get("bucket_overrides", {})),
         )
 
     def save(self, path: Path | None = None) -> Path:
@@ -135,6 +140,7 @@ class Config:
             "stream": asdict(self.stream),
             "channels": dict(self.channel_names),
             "channel_logos": dict(self.channel_logos),
+            "bucket_overrides": dict(self.bucket_overrides),
         }
         lines: list[str] = []
         for name, values in sections.items():

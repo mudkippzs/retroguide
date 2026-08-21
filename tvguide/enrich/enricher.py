@@ -86,6 +86,13 @@ class Enricher:
         merged = self._merge_series_by_tmdb()
         from .tagging import backfill as _tag_backfill
         _tag_backfill(self.conn)
+        # Config-declared bucket fixes win over heuristic/LLM classification.
+        from ..util.naming import sort_name as _sn
+        for name, bucket in (self.cfg.bucket_overrides or {}).items():
+            self.conn.execute(
+                "UPDATE titles SET bucket=? WHERE sort_name=?",
+                (bucket, _sn(name)),
+            )
         self.conn.commit()
         progress(f"Enrichment complete ({merged} dupes merged)", total, total)
         return done

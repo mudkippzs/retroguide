@@ -9,8 +9,10 @@ movie_roots = ["/mnt/movies"]
 video_extensions = [".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts", ".m2ts", ".wmv", ".mpg", ".mpeg"]
 # Substrings that mark a file/folder as junk and exclude it from the catalog.
 exclude_patterns = ["sample", "trailer", "$RECYCLE.BIN", ".parts", ".part", ".crdownload", "featurette", "behind the scenes", "extras"]
-# Skip files smaller than this (MB) -- usually samples/junk.
-min_file_mb = 50
+# Skip files smaller than this (MB) -- usually samples/junk. Keep this low:
+# 360p half-hour TV episodes are typically 30-45 MB, so a high floor silently
+# drops whole seasons of older rips from the catalog.
+min_file_mb = 10
 
 [ollama]
 host = "http://127.0.0.1:11434"
@@ -66,6 +68,13 @@ layout = "auto"
 
 [channel_logos]
 # toonworld = "/mnt/media/logos/toonworld.png"
+
+# Title-name -> scheduling bucket fixes for shows the classifiers get wrong
+# (e.g. a sitcom TMDB calls "Comedy, Drama" landing in the drama bucket).
+# Buckets: preschool, kids_cartoon, anime, action_adventure, adult_animation,
+# sitcom, drama, documentary, reality, film, other.
+[bucket_overrides]
+# "3rd Rock from the Sun" = "sitcom"
 
 [stream]
 # LAN broadcast: hit "Stream" in the app (or run `retroguide serve`) to watch

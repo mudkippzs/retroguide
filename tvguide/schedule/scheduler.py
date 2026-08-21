@@ -73,6 +73,9 @@ class Scheduler:
         # Tags that have a dedicated channel -- keep those titles off general
         # film/series pools so they don't double-air.
         self._exclusive_tags: set[str] = set()
+        # Channels that program children's buckets need age-appropriate
+        # pad films (no horror/war features filling in for cartoons).
+        self._kids_channels: set[str] = set()
 
     # -- setup --------------------------------------------------------------
     def seed_channels(self) -> dict[str, int]:
@@ -101,6 +104,8 @@ class Scheduler:
             for seg in ch.weekday + ch.weekend:
                 if seg.tag:
                     self._exclusive_tags.add(seg.tag)
+                if {"preschool", "kids_cartoon"} & set(seg.buckets):
+                    self._kids_channels.add(ch.slug)
 
         series = self.conn.execute(
             "SELECT * FROM titles WHERE kind='series'"
@@ -671,25 +676,44 @@ class Scheduler:
         """Film to fill a series daypart when episodes would only wrap/repeat.
 
         Prefer a fresh tagged niche film, then any general feature, and only
-        then repeat a lone science/standup title (avoids Cosmos×70).
+        then repeat a lone science/standup title (avoids Cosmos×70). Kids'
+        channels only get family-suitable features -- never horror/war.
         """
+        kids = ch_slug in self._kids_channels
         for tag in self._channel_tags(ch_slug):
             film, dur = self._pick_tagged_film(tag, start_ts, used,
                                                allow_repeat=False)
+            if film is not None and self._film_suitable(film, kids=kids):
+                return film, dur
+        if kids:
+            # Family-tagged features first; then anything not adult-themed.
+            film, dur = self._pick_film(
+                used_movies=used, start_ts=start_ts,
+                allow=lambda f: "family" in _row_tags(f)
+                and self._film_suitable(f, kids=True))
             if film is not None:
                 return film, dur
-        film, dur = self._pick_film(used_movies=used, start_ts=start_ts)
+        film, dur = self._pick_film(used_movies=used, start_ts=start_ts,
+                                    allow=lambda f: self._film_suitable(f, kids=kids))
         if film is not None:
             return film, dur
         for tag in self._channel_tags(ch_slug):
             film, dur = self._pick_tagged_film(tag, start_ts, used,
                                                allow_repeat=True)
-            if film is not None:
+            if film is not None and self._film_suitable(film, kids=kids):
                 return film, dur
         return None, 0.0
 
+    @staticmethod
+    def _film_suitable(film: sqlite3.Row, *, kids: bool) -> bool:
+        if not kids:
+            return True
+        return not ({"horror", "war"} & set(_row_tags(film)))
+
     def _pick_film(self, used_movies: set[int],
-                   start_ts: float) -> tuple[sqlite3.Row | None, float]:
+                   start_ts: float,
+                   allow: Callable[[sqlite3.Row], bool] | None = None,
+                   ) -> tuple[sqlite3.Row | None, float]:
         if not self._film_pool:
             return None, 0.0
         n = len(self._film_pool)
@@ -701,6 +725,8 @@ class Scheduler:
             if tags & self._exclusive_tags:
                 continue
             if film["id"] in used_movies:
+                continue
+            if allow is not None and not allow(film):
                 continue
             dur = self._film_duration(film)
             if self._film_cooling(film["id"], start_ts):

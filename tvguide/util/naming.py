@@ -36,6 +36,32 @@ EPISODE_MARKER = re.compile(
 # Explicit season/episode markers as they appear in a *single* filename.
 _SXXEXX = re.compile(r"[Ss](\d{1,2})[\s._-]?[Ee](\d{1,3})")
 _NxNN = re.compile(r"\b(\d{1,2})x(\d{2,3})\b")
+# "Season 2 Episode 01" spelled out in the filename itself.
+_SEASON_EPISODE_WORD = re.compile(
+    r"\bseason\s*(\d{1,2})\b[\s._,&-]*\bepisode\s*(\d{1,3})\b", re.I)
+# Episode word with no season ("... Episode 05 - Title"); season comes from
+# the folder instead.
+_EPISODE_WORD_ONLY = re.compile(r"\bepisode\s*(\d{1,3})\b", re.I)
+# A folder that names exactly one season ("Season 2", "S02", "Series 3").
+_FOLDER_SEASON = re.compile(
+    r"^\s*(?:season|series|staffel|saison)\s*(\d{1,2})\s*$|"
+    r"^[Ss](\d{1,2})\s*$", re.I)
+
+
+def folder_season_hint(path: Path) -> int | None:
+    """Season number from the nearest unambiguous single-season parent folder.
+
+    Box-set folders listing several seasons ("Season 1, 2, 3 & 4") are
+    ambiguous and skipped -- guessing from those collapses every season onto
+    the first one.
+    """
+    for parent in path.parents:
+        m = _FOLDER_SEASON.match(parent.name)
+        if m:
+            return int(m.group(1) or m.group(2))
+        if parent.parent == parent:
+            break
+    return None
 
 _ANIME_HINTS = re.compile(r"\b(anime|sub(bed)?|dub(bed)?|\bova\b|bd\b)\b", re.I)
 _JUNK_TOKENS = re.compile(
@@ -180,11 +206,27 @@ def parse_media(path: Path, expected_type: str | None = None) -> ParsedMedia:
     # The explicit SxxExx in the *filename* is authoritative -- a parent folder
     # like "Show Season 1-6 S01-S06" otherwise poisons guessit's season guess
     # (collapsing several seasons onto season 1). Trust the file's own marker.
-    fn = path.name
+    # Parenthesized asides can carry another show's marker -- "(The Simpsons
+    # S26E06)" on a Futurama crossover file -- so strip them before matching.
+    fn = re.sub(r"\([^)]*\)", " ", path.name)
     fm = _SXXEXX.search(fn) or _NxNN.search(fn)
     if fm:
         season = int(fm.group(1))
         episode = int(fm.group(2))
+    else:
+        # "Season 2 Episode 01" spelled out in the filename beats whatever
+        # season guessit picked up from the surrounding folders.
+        wm = _SEASON_EPISODE_WORD.search(fn)
+        if wm:
+            season = int(wm.group(1))
+            episode = int(wm.group(2))
+        elif _EPISODE_WORD_ONLY.search(fn) and episode is not None:
+            # Filename names an episode but no season; guessit's season may
+            # have leaked from a box-set folder, so prefer the nearest
+            # single-season parent folder when there is one.
+            hint = folder_season_hint(path)
+            if hint is not None:
+                season = hint
 
     kind = "unknown"
     if gtype == "episode" or season is not None or episode is not None:
