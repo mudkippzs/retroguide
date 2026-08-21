@@ -5,8 +5,8 @@ import logging
 import random
 from datetime import datetime, timedelta
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QIcon
+from PySide6.QtCore import QSize, Qt, QTimer
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -27,6 +27,7 @@ from ..config import Config
 from ..db import connect, get_meta, init_db, set_meta
 from .guide_view import GridView, MagazineView
 from .health import HealthDots
+from .library_view import LibraryPanel
 from .player_panel import PlayerPanel
 from .settings_dialog import SettingsDialog
 from .workers import (
@@ -116,6 +117,12 @@ class MainWindow(QWidget):
         self.player.video.loadFailed.connect(self._on_play_error)
         self.player.apply_skin(self.cfg.ui.crt, self.cfg.ui.bw)
         self.guide_panel = self._build_guide_panel()
+        self.library = LibraryPanel(self.conn)
+        self.library.playRequested.connect(self._binge_play_from_top)
+        # Binge playback state: expanded queue + cursor, active in Binge mode.
+        self._binge_mode = False
+        self._binge_queue: list = []
+        self._binge_idx = -1
 
         # Body host is re-laid-out between wide (side-by-side) and compact
         # (stacked) without destroying the child widgets.
@@ -154,6 +161,24 @@ class MainWindow(QWidget):
         self.view_grid_btn.clicked.connect(lambda: self._set_view(1))
         bar.addWidget(self.view_mag_btn)
         bar.addWidget(self.view_grid_btn)
+        bar.addSpacing(6)
+
+        self.mode_tv_btn = QPushButton("TV")
+        self.mode_binge_btn = QPushButton("Binge")
+        for b in (self.mode_tv_btn, self.mode_binge_btn):
+            b.setCheckable(True)
+        self.mode_tv_btn.setChecked(True)
+        self.mode_tv_btn.setToolTip("Broadcast mode — channels and the guide (T)")
+        self.mode_binge_btn.setToolTip(
+            "Binge mode — build a queue from the library and play it (T)")
+        mg = QButtonGroup(self)
+        mg.setExclusive(True)
+        mg.addButton(self.mode_tv_btn)
+        mg.addButton(self.mode_binge_btn)
+        self.mode_tv_btn.clicked.connect(lambda: self._set_mode(False))
+        self.mode_binge_btn.clicked.connect(lambda: self._set_mode(True))
+        bar.addWidget(self.mode_tv_btn)
+        bar.addWidget(self.mode_binge_btn)
         bar.addSpacing(6)
 
         self.layout_btn = QPushButton("Compact")
@@ -332,6 +357,7 @@ class MainWindow(QWidget):
     def reload(self) -> None:
         self.conn.commit()
         self.health.check()
+        self.library.reload()
         if not repo.has_schedule(self.conn):
             self._stack.setCurrentIndex(1)
             return
@@ -390,8 +416,15 @@ class MainWindow(QWidget):
             QWidget().setLayout(self._body_layout)
             self._body_layout = None
 
-        if compact:
-            lay: QHBoxLayout | QVBoxLayout = QVBoxLayout(self.body_host)
+        if self._binge_mode:
+            # Binge posture: no channels, no guide — player + library/queue.
+            lay = QHBoxLayout(self.body_host)
+            lay.setContentsMargins(0, 0, 0, 0)
+            lay.setSpacing(12)
+            lay.addWidget(self.player, 3)
+            lay.addWidget(self.library, 2)
+        elif compact:
+            lay = QVBoxLayout(self.body_host)
             lay.setContentsMargins(0, 0, 0, 0)
             lay.setSpacing(10)
             lay.addWidget(self.player, 5)
@@ -405,6 +438,9 @@ class MainWindow(QWidget):
             lay.addWidget(self.player, 3)
             lay.addWidget(self.guide_panel, 2)
         self._body_layout = lay
+        self.sidebar.setVisible(not self._binge_mode)
+        self.guide_panel.setVisible(not self._binge_mode)
+        self.library.setVisible(self._binge_mode)
 
         self._style_sidebar(compact)
         self._rebuild_channel_box(compact)
@@ -469,6 +505,60 @@ class MainWindow(QWidget):
             self.channel_box.setContentsMargins(2, 2, 2, 2)
             self.channel_box.setSpacing(8)
         self.channel_box.addStretch()
+
+    def _set_mode(self, binge: bool) -> None:
+        if binge == self._binge_mode:
+            return
+        self._binge_mode = binge
+        # Context-aware chrome: guide controls only make sense on TV.
+        for w in (self.view_mag_btn, self.view_grid_btn, self.surprise_btn):
+            w.setVisible(not binge)
+        self.player.live_btn.setVisible(not binge)
+        if binge:
+            self.library.reload()
+            self._binge_queue = []
+            self._binge_idx = -1
+            self.player.set_now_playing("BINGE", "Build a queue and press ▶ Play", "")
+            self.player.set_next("")
+        else:
+            self._binge_queue = []
+            self._binge_idx = -1
+            self.go_live()
+        self._apply_layout(force=True)
+
+    # ====================================================================
+    # Binge playback
+    # ====================================================================
+    def _binge_play_from_top(self) -> None:
+        from ..binge import playlist
+        queue = playlist.expand(self.conn)
+        if not queue:
+            self.player.show_error("Queue is empty — add something from the library")
+            return
+        self._binge_queue = queue
+        self._play_binge(0)
+
+    def _play_binge(self, idx: int) -> None:
+        if not self._binge_queue:
+            return
+        idx = max(0, min(len(self._binge_queue) - 1, idx))
+        self._binge_idx = idx
+        qi = self._binge_queue[idx]
+        self.current_program = None
+        self.player.static_wipe()
+        self.player.video.play(qi.path, 0.0)
+        self.player.set_now_playing("BINGE", qi.display_title, qi.subtitle)
+        nxt = (self._binge_queue[idx + 1].display_title
+               if idx + 1 < len(self._binge_queue) else "")
+        self.player.set_next(nxt)
+        self.player.flash_osd(f"QUEUE {idx + 1}/{len(self._binge_queue)}")
+
+    def _binge_advance(self, delta: int) -> None:
+        nxt = self._binge_idx + delta
+        if 0 <= nxt < len(self._binge_queue):
+            self._play_binge(nxt)
+        elif delta > 0:
+            self.player.flash_osd("Queue finished", ms=3000)
 
     def _toggle_compact(self) -> None:
         # Explicit preference (leaves "auto" behind so the choice sticks).
@@ -754,6 +844,9 @@ class MainWindow(QWidget):
     def _on_play_error(self, reason: str) -> None:
         self.player.show_error(f"{reason} \u2014 skipping")
         self.status_lbl.setText(reason)
+        if self._binge_mode:
+            self._binge_advance(1)
+            return
         # Auto-advance past a dead file so the channel never sticks on black.
         if self.current_program:
             nxt = repo.next_playable(
@@ -763,6 +856,9 @@ class MainWindow(QWidget):
                 self._play(nxt, live=False)
 
     def _on_end_reached(self) -> None:
+        if self._binge_mode:
+            self._binge_advance(1)
+            return
         if not self.current_program:
             return
         nxt = repo.next_playable(self.conn, self.current_program.channel_id,
@@ -771,6 +867,9 @@ class MainWindow(QWidget):
             self._play(nxt, live=False)
 
     def _play_next(self) -> None:
+        if self._binge_mode:
+            self._binge_advance(1)
+            return
         if not self.current_program:
             return
         nxt = repo.next_playable(self.conn, self.current_program.channel_id,
@@ -779,6 +878,9 @@ class MainWindow(QWidget):
             self._play(nxt, live=False)
 
     def _play_prev(self) -> None:
+        if self._binge_mode:
+            self._binge_advance(-1)
+            return
         if not self.current_program:
             return
         prev = self.conn.execute(
@@ -794,8 +896,11 @@ class MainWindow(QWidget):
     def _toggle_fullscreen(self) -> None:
         entering = not self.isFullScreen()
         # Cinema mode: hide the chrome so the video fills the screen.
-        for w in (self.topbar, self.sidebar, self.guide_panel):
-            w.setVisible(not entering)
+        self.topbar.setVisible(not entering)
+        tv_chrome = not entering and not self._binge_mode
+        self.sidebar.setVisible(tv_chrome)
+        self.guide_panel.setVisible(tv_chrome)
+        self.library.setVisible(not entering and self._binge_mode)
         if entering:
             self.showFullScreen()
         else:
@@ -809,10 +914,16 @@ class MainWindow(QWidget):
             self._toggle_fullscreen()
         elif key == Qt.Key.Key_Space:
             self.player.video.toggle_pause()
+        elif key == Qt.Key.Key_T:
+            self._set_mode(not self._binge_mode)
+            (self.mode_binge_btn if self._binge_mode
+             else self.mode_tv_btn).setChecked(True)
         elif key in (Qt.Key.Key_Up, Qt.Key.Key_PageUp):
-            self._surf(-1)
+            if not self._binge_mode:
+                self._surf(-1)
         elif key in (Qt.Key.Key_Down, Qt.Key.Key_PageDown):
-            self._surf(1)
+            if not self._binge_mode:
+                self._surf(1)
         elif key == Qt.Key.Key_Left:
             self.player.nudge_seek(-30)
         elif key == Qt.Key.Key_Right:
@@ -832,7 +943,8 @@ class MainWindow(QWidget):
         elif key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self._commit_number()
         elif Qt.Key.Key_0 <= key <= Qt.Key.Key_9:
-            self._push_digit(key - Qt.Key.Key_0)
+            if not self._binge_mode:
+                self._push_digit(key - Qt.Key.Key_0)
         else:
             super().keyPressEvent(event)
 

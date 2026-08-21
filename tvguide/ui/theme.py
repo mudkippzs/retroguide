@@ -178,4 +178,25 @@ QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabBar::tab:selected {{ background: {PANEL_HI}; color: {ACCENT}; }}
 
 QLabel {{ background: transparent; }}
+
+/* Binge-mode library browser + queue */
+QTreeWidget, QListWidget {{
+    background: {PANEL_HI}; border: 1px solid {BORDER};
+    border-radius: 10px; padding: 4px;
+}}
+QTreeWidget::item, QListWidget::item {{
+    padding: 4px 6px; border-radius: 6px;
+}}
+QTreeWidget::item:selected, QListWidget::item:selected {{
+    background: {ACCENT_DIM}; color: {TEXT};
+}}
+QTreeWidget::item:hover, QListWidget::item:hover {{ background: {PANEL}; }}
+QTreeWidget::branch:has-children:closed {{
+    image: none; border-top: 5px solid transparent;
+    border-bottom: 5px solid transparent; border-left: 7px solid {MUTED};
+}}
+QTreeWidget::branch:has-children:open {{
+    image: none; border-left: 5px solid transparent;
+    border-right: 5px solid transparent; border-top: 7px solid {MUTED};
+}}
 """

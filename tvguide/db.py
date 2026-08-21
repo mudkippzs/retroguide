@@ -111,6 +111,28 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Binge-mode: named playlists of catalog references. Coarse items (series,
+-- season) stay unexpanded so a playlist survives rescans and catalog growth.
+CREATE TABLE IF NOT EXISTS playlists (
+    id            INTEGER PRIMARY KEY,
+    name          TEXT UNIQUE NOT NULL,
+    created_at    REAL
+);
+
+CREATE TABLE IF NOT EXISTS playlist_items (
+    id            INTEGER PRIMARY KEY,
+    playlist_id   INTEGER NOT NULL,
+    position      INTEGER NOT NULL,
+    kind          TEXT NOT NULL,            -- 'film' | 'series' | 'season' | 'episode'
+    title_id      INTEGER NOT NULL,
+    season        INTEGER,                  -- for kind='season'
+    episode_id    INTEGER,                  -- for kind='episode'
+    FOREIGN KEY(playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+    FOREIGN KEY(title_id) REFERENCES titles(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_playlist_items ON playlist_items(playlist_id, position);
 """
 
 
