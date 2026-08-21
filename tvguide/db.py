@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS titles (
     enriched_at    REAL,
     franchise      TEXT,                    -- e.g. 'star wars', 'mcu'
     tags           TEXT,                    -- json list: 'christmas','horror'...
+    enrich_state   TEXT DEFAULT 'pending',  -- pending|done|error
+    enrich_error   TEXT,                    -- last enrichment failure reason
     UNIQUE(kind, name, year),
     FOREIGN KEY(movie_file_id) REFERENCES media_files(id)
 );
@@ -66,7 +68,7 @@ CREATE TABLE IF NOT EXISTS episodes (
 -- Per-series broadcast playhead: which episode airs next.
 CREATE TABLE IF NOT EXISTS playheads (
     title_id      INTEGER PRIMARY KEY,
-    next_order    INTEGER DEFAULT 0,        -- index into ordered episode list
+    next_order    INTEGER DEFAULT 0,        -- next abs_order cursor (wraps)
     FOREIGN KEY(title_id) REFERENCES titles(id)
 );
 
@@ -114,18 +116,20 @@ CREATE TABLE IF NOT EXISTS meta (
 
 def connect(path: Path | None = None) -> sqlite3.Connection:
     ensure_data_dir()
-    conn = sqlite3.connect(path or DB_PATH, timeout=30)
+    # Autocommit by default so a forgotten commit cannot hold a write lock
+    # against the GUI / workers. Callers that need a transaction use BEGIN.
+    conn = sqlite3.connect(path or DB_PATH, timeout=60, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA foreign_keys=ON;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute("PRAGMA busy_timeout=60000;")
     return conn
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _migrate(conn)
-    conn.commit()
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
@@ -138,6 +142,35 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE titles ADD COLUMN franchise TEXT")
     if "tags" not in tcols:
         conn.execute("ALTER TABLE titles ADD COLUMN tags TEXT")
+    added_enrich = False
+    if "enrich_state" not in tcols:
+        conn.execute(
+            "ALTER TABLE titles ADD COLUMN enrich_state TEXT DEFAULT 'pending'")
+        added_enrich = True
+    if "enrich_error" not in tcols:
+        conn.execute("ALTER TABLE titles ADD COLUMN enrich_error TEXT")
+        added_enrich = True
+    # Heavy enrich_state backfill only when the columns were just added.
+    # Never rewrite titles on every init_db — that fought the GUI connection
+    # and made Rebuild fail with "database is locked".
+    row = conn.execute(
+        "SELECT value FROM meta WHERE key='migrate_enrich_state_v1'"
+    ).fetchone()
+    if row is not None:
+        return
+    if added_enrich:
+        conn.execute(
+            "UPDATE titles SET enrich_state='done' "
+            "WHERE overview IS NOT NULL AND TRIM(overview)!=''"
+        )
+        conn.execute(
+            "UPDATE titles SET enrich_state='pending' "
+            "WHERE kind='movie' AND (overview IS NULL OR TRIM(overview)='')"
+        )
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES('migrate_enrich_state_v1', '1') "
+        "ON CONFLICT(key) DO UPDATE SET value='1'"
+    )
 
 
 def get_meta(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QOpenGLContext
 from PySide6.QtOpenGLWidgets import QOpenGLWidget
 
+from ..util.audio_norm import AUDIO_NORM
+
 
 def _get_proc_address(_ctx, name):
     """Resolve an OpenGL function pointer via Qt's current GL context."""
@@ -55,6 +57,9 @@ class MpvWidget(QOpenGLWidget):
             alang="eng,en,english",
             slang="eng,en,english",
             sid="no",
+            # Smooth out loudness jumps between rips / channels (matches the
+            # ffmpeg dynaudnorm used on the LAN stream path).
+            af=f"lavfi=[{AUDIO_NORM}]",
             log_handler=self._on_log,
         )
         self._ctx: mpv.MpvRenderContext | None = None
@@ -93,8 +98,8 @@ class MpvWidget(QOpenGLWidget):
         )
 
     def _on_log(self, level: str, prefix: str, text: str) -> None:
-        # Surface decode failures (e.g. missing HEVC codec) instead of a silent
-        # black screen. Runs on mpv's thread; the queued signal hops to the GUI.
+        # Surface decode / I/O failures instead of a silent black screen.
+        # Runs on mpv's thread; the queued signal hops to the GUI.
         msg = text.strip()
         low = msg.lower()
         if "failed to initialize a decoder" in low or "could not open codec" in low:
@@ -103,6 +108,12 @@ class MpvWidget(QOpenGLWidget):
                 codec = msg.split("'")[1].upper()
             reason = f"No {codec} decoder installed" if codec else "Unsupported codec"
             self.loadFailed.emit(reason)
+            return
+        if any(t in low for t in (
+            "failed to open", "cannot open file", "no such file",
+            "error opening", "failed to recognize file format",
+        )):
+            self.loadFailed.emit("Unreadable media file")
 
     # -- observers ----------------------------------------------------------
     def _wire_observers(self) -> None:
@@ -132,9 +143,13 @@ class MpvWidget(QOpenGLWidget):
 
     # -- transport ----------------------------------------------------------
     def play(self, path: str, start_sec: float = 0.0) -> None:
+        import os
         # If GL isn't ready yet, remember the request and start it in initializeGL.
         if self._ctx is None:
             self._pending = (path, start_sec)
+            return
+        if not path or not os.path.isfile(path):
+            self.loadFailed.emit("File missing")
             return
         try:
             if start_sec > 1:
@@ -147,8 +162,9 @@ class MpvWidget(QOpenGLWidget):
         except Exception:
             try:
                 self._mpv.play(path)
+                self._mpv.pause = False
             except Exception:
-                pass
+                self.loadFailed.emit("Playback failed")
 
     def toggle_pause(self) -> None:
         self._mpv.pause = not self._mpv.pause

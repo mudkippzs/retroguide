@@ -52,6 +52,18 @@ QPushButton#channel:checked {{
         stop:0 rgba(54,224,200,0.18), stop:1 rgba(54,224,200,0.04));
     border: 1px solid {ACCENT};
 }}
+/* Compact / portrait channel chips (horizontal strip). */
+QPushButton#channelCompact {{
+    text-align: center; padding: 8px 12px; border-radius: 10px;
+    background: {PANEL_HI}; border: 1px solid {BORDER};
+    font-size: 12px; font-weight: 700;
+}}
+QPushButton#channelCompact:hover {{ border: 1px solid {ACCENT_DIM}; }}
+QPushButton#channelCompact:checked {{
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+        stop:0 rgba(54,224,200,0.22), stop:1 rgba(54,224,200,0.06));
+    border: 1px solid {ACCENT};
+}}
 
 QPushButton {{
     background: {PANEL_HI}; border: 1px solid {BORDER};

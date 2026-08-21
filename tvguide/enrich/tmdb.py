@@ -21,6 +21,7 @@ class TitleMeta:
     runtime: int | None = None       # minutes (movie)
     name: str | None = None
     year: int | None = None
+    origin: str | None = None        # ISO country / language hint (e.g. 'JP')
 
 
 class TMDBClient:
@@ -93,10 +94,18 @@ class TMDBClient:
             poster_url=IMG + s["poster_path"] if s.get("poster_path") else None,
             name=s.get("name"),
             year=_year(s.get("first_air_date")),
+            origin=(s.get("origin_country") or [None])[0],
         )
-        details = self._get(f"/tv/{meta.tmdb_id}")
+        details = self._get(f"/tv/{meta.tmdb_id}", append_to_response="credits")
         if details:
             meta.genres = [g["name"] for g in details.get("genres", [])]
+            if not meta.origin:
+                countries = details.get("origin_country") or []
+                meta.origin = countries[0] if countries else None
+            if not meta.origin:
+                meta.origin = (details.get("original_language") or "").upper() or None
+            cast = details.get("credits", {}).get("cast", [])
+            meta.cast = [c["name"] for c in cast[:4]]
         return meta
 
     def tv_season(self, tmdb_id: int, season: int) -> dict[int, dict]:

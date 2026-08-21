@@ -41,7 +41,7 @@ class ProgramRow(QFrame):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._accent = accent
         self._is_now = False
-        self._missing = program.path is None
+        self._missing = (not program.playable) or program.path is None
 
         root = QHBoxLayout(self)
         root.setContentsMargins(14, 12, 14, 12)
@@ -124,6 +124,17 @@ class ProgramRow(QFrame):
                 "stop:0 #2c1622, stop:1 #16101a);"
                 "border:1px solid #ff5e8a; border-radius:12px; margin:2px 4px; }"
                 "#progRow:hover { background: #361a29; }"
+            )
+        elif self._missing:
+            # File is gone from disk -- keep it in the listing (so the grid
+            # still reads as a continuous schedule) but grey it out and flag it.
+            self.badge.setText("N/A")
+            self.badge.setStyleSheet(
+                f"color:{theme.MUTED}; font-size:9px; font-weight:800; letter-spacing:1px;")
+            self.setStyleSheet(
+                "#progRow {"
+                "background:transparent; border:1px dashed #24384f;"
+                "border-radius:12px; margin:2px 4px; }"
             )
         else:
             self.badge.setText("")

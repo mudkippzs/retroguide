@@ -187,6 +187,15 @@ class SettingsDialog(QDialog):
         self.default_view.setCurrentIndex(max(0, idx))
         form.addRow("Default guide view", self.default_view)
 
+        self.layout_mode = QComboBox()
+        self.layout_mode.addItems(["auto", "wide", "compact"])
+        lidx = self.layout_mode.findText(self.cfg.ui.layout or "auto")
+        self.layout_mode.setCurrentIndex(max(0, lidx))
+        self.layout_mode.setToolTip(
+            "compact stacks player / channels / guide for portrait "
+            "ultrawides; auto follows the window aspect ratio")
+        form.addRow("Window layout", self.layout_mode)
+
         self.era = QComboBox()
         self.era.addItems(["70s", "80s", "90s", "00s"])
         eidx = self.era.findText(self.cfg.ui.era)
@@ -199,7 +208,8 @@ class SettingsDialog(QDialog):
         form.addRow("", self.crt)
         form.addRow("", self.bw)
         note = QLabel("Era styling applies live in the LAN web view; the desktop "
-                      "player honours the CRT and B&W toggles.")
+                      "player honours the CRT and B&W toggles. Compact layout "
+                      "is also toggleable with the Compact button or V key.")
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{theme.MUTED}; font-size:11px;")
         form.addRow(note)
@@ -220,6 +230,7 @@ class SettingsDialog(QDialog):
         self.cfg.schedule.day_start_hour = self.day_start.value()
         self.cfg.schedule.events = self.events.isChecked()
         self.cfg.ui.default_view = self.default_view.currentText()
+        self.cfg.ui.layout = self.layout_mode.currentText()
         self.cfg.ui.era = self.era.currentText()
         self.cfg.ui.crt = self.crt.isChecked()
         self.cfg.ui.bw = self.bw.isChecked()

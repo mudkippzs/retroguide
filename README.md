@@ -26,11 +26,13 @@ reruns, no licensing — and it grows on its own as you add to your collection.
 - **Free enrichment** — **TVmaze** metadata for TV (no key/billing), optional
   TMDB for films if you have a key, plus a local LLM that rewrites synopses into
   punchy, spoiler-free retro listings. Works fully offline if nothing's reachable.
-- **Six themed channels** — ToonWorld, Prime, Maxx, Chuckle, The Movie Channel
-  and Nite Owl, each with day-part templates that differ weekday vs weekend. TV
-  shows advance **episode by episode** across the week via a persistent
-  per-series playhead, and each series sticks to one channel so progression
-  stays sequential and shows don't duplicate across channels.
+- **Themed channels** — cartoon, drama, action, comedy, cinema, anime, adult
+  animation, science, stand-up and +1 timeshifts, each with day-part templates.
+  TV shows advance **episode by episode** from S01E01 via a persistent
+  per-series playhead (abs_order cursor). Each series has an exclusive home
+  channel, with title/episode cooldowns and a per-day airing cap so the grid
+  stays regular but fresh. Partial/missing/unprobed files are excluded from
+  the grid entirely.
 - **Special events** — seasonal & spontaneous stunts take over The Movie Channel
   (Christmas cinema, a May-4th Star Wars bonanza, a Marvel origins weekend…),
   driven by automatic franchise/holiday tagging. Toggle in config.
@@ -140,6 +142,7 @@ The same pipeline is scriptable:
 ./.venv/bin/python -m tvguide.cli blurbs    # LLM retro teasers
 ./.venv/bin/python -m tvguide.cli serve     # LAN/remote stream server
 ./.venv/bin/python -m tvguide.cli stats
+./.venv/bin/python -m tvguide.cli doctor   # integrity check
 ```
 
 ## Configuration notes

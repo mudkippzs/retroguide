@@ -28,8 +28,8 @@ class LibraryConfig:
     )
     exclude_patterns: list[str] = field(
         default_factory=lambda: [
-            "sample", "trailer", "$RECYCLE.BIN", ".parts",
-            "featurette", "behind the scenes", "extras",
+            "sample", "trailer", "$RECYCLE.BIN", ".parts", ".part",
+            ".crdownload", "featurette", "behind the scenes", "extras",
         ]
     )
     min_file_mb: int = 50
@@ -70,6 +70,9 @@ class UiConfig:
     era: str = "90s"
     crt: bool = True
     bw: bool = False
+    # Window chrome: "wide" (side-by-side), "compact" (stacked for portrait /
+    # ultrawide-rotated), or "auto" (pick from window aspect ratio).
+    layout: str = "auto"
 
 
 @dataclass
@@ -85,6 +88,8 @@ class StreamConfig:
     # Serve HLS to Apple devices (iOS/macOS Safari can't play the progressive
     # MP4 stream). Other browsers keep using the lower-latency MP4 path.
     hls: bool = True
+    # Dynamic loudness normalization so quiet/loud rips don't jar on tune-in.
+    normalize_audio: bool = True
 
 
 @dataclass

@@ -1,7 +1,9 @@
 """Video surface plus a full transport bar that drives the embedded player."""
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, Signal
+import random
+
+from PySide6.QtCore import QEvent, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient
 from PySide6.QtWidgets import (
     QFrame,
@@ -41,6 +43,33 @@ class _CrtOverlay(QWidget):
         g.setColorAt(0.55, QColor(0, 0, 0, 0))
         g.setColorAt(1.0, QColor(0, 0, 0, 140))
         p.fillRect(self.rect(), g)
+
+
+class _StaticOverlay(QWidget):
+    """A brief burst of TV static, flashed over the video on a channel change."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.hide()
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+
+    def flash(self, ms: int = 190) -> None:
+        self.show()
+        self.raise_()
+        self.update()
+        self._timer.start(ms)
+
+    def paintEvent(self, _event) -> None:  # noqa: ANN001
+        p = QPainter(self)
+        w, h = self.width(), self.height()
+        cell = 6
+        for y in range(0, h, cell):
+            for x in range(0, w, cell):
+                g = random.randint(0, 255)
+                p.fillRect(x, y, cell, cell, QColor(g, g, g))
 
 
 class PlayerPanel(QFrame):
@@ -84,6 +113,19 @@ class PlayerPanel(QFrame):
         self._crt = False
         self.crt_overlay = _CrtOverlay(self.video)
         self.crt_overlay.hide()
+        # Channel-change static and a transient on-screen display (volume,
+        # channel number, seek nudges) both sit above the video.
+        self.static_overlay = _StaticOverlay(self.video)
+        self.osd = QLabel("", self.video)
+        self.osd.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.osd.setStyleSheet(
+            "background: rgba(6,12,18,0.82); color:#e8f1f5; border-radius:10px; "
+            f"border:1px solid {theme.ACCENT}; padding:8px 16px; "
+            "font-size:20px; font-weight:800; letter-spacing:1px;")
+        self.osd.hide()
+        self._osd_timer = QTimer(self)
+        self._osd_timer.setSingleShot(True)
+        self._osd_timer.timeout.connect(self.osd.hide)
         self.video.installEventFilter(self)
 
         # Seek bar.
@@ -129,8 +171,8 @@ class PlayerPanel(QFrame):
         self.vol.valueChanged.connect(self.video.set_volume)
         self.audio_btn = self._tbtn("AUD", self._show_audio_menu)
         self.audio_btn.setToolTip("Audio track (defaults to English)")
-        self.cc_btn = self._tbtn("CC", self._toggle_subs)
-        self.cc_btn.setToolTip("Subtitles on/off")
+        self.cc_btn = self._tbtn("CC", self._show_subs_menu)
+        self.cc_btn.setToolTip("Subtitles: off / pick a track")
         self.bw_btn = self._tbtn("B&W", self._toggle_bw)
         self.bw_btn.setToolTip("Black & white picture")
         self.crt_btn = self._tbtn("CRT", self._toggle_crt)
@@ -199,10 +241,64 @@ class PlayerPanel(QFrame):
             act.triggered.connect(lambda _=False, tid=t["id"]: self.video.set_audio(tid))
         menu.exec(self.audio_btn.mapToGlobal(self.audio_btn.rect().topLeft()))
 
-    def _toggle_subs(self) -> None:
-        on = self.video.toggle_subtitles()
-        self.cc_btn.setStyleSheet(
-            f"color:{theme.ACCENT};" if on else "")
+    def _show_subs_menu(self) -> None:
+        tracks = self.video.subtitle_tracks()
+        on = self.video.subtitles_on()
+        menu = QMenu(self)
+        off = menu.addAction(("\u2713 " if not on else "    ") + "Off")
+        off.triggered.connect(lambda: self._set_subs(None))
+        if not tracks:
+            act = menu.addAction("No subtitle tracks")
+            act.setEnabled(False)
+        for t in tracks:
+            act = menu.addAction(("\u2713 " if t["selected"] else "    ") + t["label"])
+            act.triggered.connect(lambda _=False, tid=t["id"]: self._set_subs(tid))
+        menu.exec(self.cc_btn.mapToGlobal(self.cc_btn.rect().topLeft()))
+
+    def _set_subs(self, track_id) -> None:  # noqa: ANN001
+        if track_id is None:
+            self.video.set_subtitle("no")
+            on = False
+        else:
+            self.video.set_subtitle(track_id)
+            on = True
+        self.cc_btn.setStyleSheet(f"color:{theme.ACCENT};" if on else "")
+
+    # -- on-screen display + transient overlays -----------------------------
+    def flash_osd(self, text: str, ms: int = 1300) -> None:
+        """Pop a translucent status chip (volume, channel no.) over the video."""
+        self.osd.setText(text)
+        self._position_osd()
+        self.osd.show()
+        self.osd.raise_()
+        self._osd_timer.start(ms)
+
+    def _position_osd(self) -> None:
+        self.osd.adjustSize()
+        x = (self.video.width() - self.osd.width()) // 2
+        self.osd.move(max(8, x), 18)
+
+    def static_wipe(self) -> None:
+        self.static_overlay.setGeometry(self.video.rect())
+        self.static_overlay.flash()
+
+    def bump_volume(self, delta: int) -> None:
+        new = max(0, min(130, self.vol.value() + delta))
+        self.vol.setValue(new)
+        if self._muted and new > 0:      # nudging volume unmutes
+            self._muted = False
+            self.video.set_mute(False)
+            self.mute_btn.setText("\U0001f50a")
+        self.flash_osd(f"\U0001f50a {new}%")
+
+    def toggle_mute(self) -> None:
+        self._toggle_mute()
+        self.flash_osd("\U0001f507 MUTED" if self._muted else f"\U0001f50a {self.vol.value()}%")
+
+    def nudge_seek(self, delta: float) -> None:
+        self.video.seek_relative(delta)
+        arrow = "\u23e9" if delta >= 0 else "\u23ea"
+        self.flash_osd(f"{arrow} {'+' if delta >= 0 else '-'}{int(abs(delta))}s")
 
     def _toggle_bw(self) -> None:
         self.set_bw(not self._bw)
@@ -232,6 +328,9 @@ class PlayerPanel(QFrame):
     def eventFilter(self, obj, event) -> bool:  # noqa: ANN001
         if obj is self.video and event.type() == QEvent.Type.Resize:
             self.crt_overlay.setGeometry(self.video.rect())
+            self.static_overlay.setGeometry(self.video.rect())
+            if self.osd.isVisible():
+                self._position_osd()
         return super().eventFilter(obj, event)
 
     def _on_seek_start(self) -> None:

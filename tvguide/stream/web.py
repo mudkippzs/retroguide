@@ -102,13 +102,21 @@ header{display:flex;align-items:center;gap:14px;padding:12px 18px;
   box-shadow:0 0 10px var(--bloom)}
 
 /* ---- main layout ---- */
-main{flex:1;min-height:0;display:grid;grid-template-columns:1fr 380px;gap:16px;
-  padding:16px;overflow:hidden}
-@media(max-width:920px){main{grid-template-columns:1fr;overflow:auto}
+main{flex:1;min-height:0;display:flex;gap:0;padding:16px;overflow:hidden;
+  --side-w:380px}
+@media(max-width:920px){main{flex-direction:column;overflow:auto}
   .stage{min-height:auto}.screen{flex:0 0 auto}
-  video{height:auto;aspect-ratio:16/9}}
+  video{height:auto;aspect-ratio:16/9}
+  .side-handle{display:none!important}
+  .side{position:fixed;top:58px;right:0;bottom:0;z-index:15;
+    width:min(92vw,var(--side-w))!important;max-width:100%;
+    padding:12px;background:var(--bg);border-left:1px solid var(--border);
+    box-shadow:-16px 0 48px rgba(0,0,0,.55);
+    transform:translateX(105%);opacity:1;pointer-events:none;
+    transition:transform .22s ease}
+  main.side-open .side{transform:none;pointer-events:auto;flex:none}}
 
-.stage{min-width:0;min-height:0;display:flex;flex-direction:column;gap:14px}
+.stage{flex:1 1 auto;min-width:0;min-height:0;display:flex;flex-direction:column;gap:14px}
 .screen{position:relative;flex:1 1 auto;min-height:0;background:#000;
   border:1px solid var(--border);
   border-radius:14px;overflow:hidden;box-shadow:0 0 0 1px rgba(0,0,0,.4),
@@ -139,16 +147,39 @@ video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
 .times{display:flex;justify-content:space-between;margin-top:6px;font-size:11px;
   color:var(--muted);font-family:"JetBrains Mono",ui-monospace,monospace}
 
-/* ---- side panel ---- */
-.side{min-height:0;display:flex;flex-direction:column;gap:14px}
+/* ---- side panels (slide-out + resizable) ---- */
+.side-handle{flex:0 0 0;width:0;margin:0;padding:0;border:0;opacity:0;
+  cursor:col-resize;align-self:stretch;position:relative;touch-action:none;
+  transition:opacity .15s,flex-basis .2s,width .2s,margin .2s}
+main.side-open .side-handle{flex:0 0 8px;width:8px;margin:0 6px;opacity:1}
+.side-handle::after{content:"";position:absolute;top:20%;bottom:20%;left:2px;
+  right:2px;border-radius:4px;background:var(--border)}
+.side-handle:hover::after,main.resizing .side-handle::after{background:var(--accent);
+  box-shadow:0 0 10px var(--bloom)}
+main.resizing,main.resizing *{cursor:col-resize!important;user:none!important;
+  transition:none!important}
+.side{flex:0 0 0;width:0;min-width:0;min-height:0;display:flex;flex-direction:column;
+  gap:14px;overflow:hidden;opacity:0;transform:translateX(18px);pointer-events:none;
+  transition:width .22s ease,flex-basis .22s ease,opacity .18s ease,transform .22s ease}
+main.side-open .side{flex:0 0 var(--side-w);width:var(--side-w);opacity:1;
+  transform:none;pointer-events:auto}
+.sidetab{position:fixed;top:50%;right:0;z-index:16;transform:translateY(-50%);
+  background:var(--panel2);color:var(--accent);border:1px solid var(--border);
+  border-right:0;border-radius:10px 0 0 10px;padding:14px 8px;font-size:12px;
+  font-weight:800;letter-spacing:1px;cursor:pointer;writing-mode:vertical-rl;
+  text-orientation:mixed;box-shadow:-6px 0 20px rgba(0,0,0,.35);display:none}
+.sidetab:hover{background:var(--accent);color:#06121a}
+body.side-closed .sidetab{display:block}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;
   display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.panel.collapsed{display:none}
 .panel > h3{margin:0;padding:12px 15px;font-size:11px;letter-spacing:2px;
   font-weight:800;color:var(--muted);border-bottom:1px solid var(--border);
   display:flex;justify-content:space-between;align-items:center}
 .panel .scroll{overflow:auto;padding:8px}
 .channels{flex:0 0 auto;max-height:46%}
 .guide{flex:1 1 auto}
+.side.ch-only .channels,.side.guide-only .guide{flex:1 1 auto;max-height:none}
 
 .chip{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:10px;
   cursor:pointer;border:1px solid transparent;transition:.12s}
@@ -178,6 +209,9 @@ video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
 .g-row .gtitle{font-size:13.5px;font-weight:600}
 .g-row .gsub{font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis}
+.g-row .gblurb{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.35;
+  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.g-row.missing{opacity:.45}
 .g-row.now .gtitle{color:#fff}
 .empty{color:var(--muted);font-size:13px;padding:24px;text-align:center}
 
@@ -214,6 +248,12 @@ video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
   text-overflow:ellipsis}
 .gnow{position:absolute;top:22px;width:2px;background:var(--now);z-index:3;
   box-shadow:0 0 8px var(--now)}
+/* channel-change static: a brief noise burst flashed over the screen */
+.static{position:absolute;inset:0;z-index:6;pointer-events:none;opacity:0;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size:cover;mix-blend-mode:screen}
+.static.go{animation:st .22s steps(3) forwards}
+@keyframes st{0%{opacity:.85}100%{opacity:0}}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:20;
   background:var(--panel2);border:1px solid var(--accent);color:var(--text);
   padding:10px 16px;border-radius:10px;font-size:13px;opacity:0;transition:.25s;
@@ -240,15 +280,20 @@ video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
         <option value=90s>90s</option>
         <option value=00s>00s</option>
       </select>
+      <button id=togch class="tg-btn on" title="Channels panel">CH</button>
+      <button id=togguide class="tg-btn on" title="TV Guide panel">GUIDE</button>
+      <button id=cc class=tg-btn title="English subtitles">CC</button>
       <button id=bw class=tg-btn title="Black &amp; white picture">B&amp;W</button>
       <button id=crt class=tg-btn title="CRT scanlines">CRT</button>
+      <button id=pip class=tg-btn title="Picture in picture">PiP</button>
     </div>
     <div class=clock id=clock>--:--:--</div>
   </header>
-  <main>
+  <main id=main class=side-open>
     <section class=stage>
       <div class=screen>
         <video id=v autoplay controls playsinline></video>
+        <div class=static id=static></div>
         <div class=crtfx></div>
         <img class=bug id=bug alt="" style=display:none>
         <span class=badge id=badge style=display:none>ON AIR</span>
@@ -262,12 +307,13 @@ video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
         <div class=times><span id=tstart></span><span id=tend></span></div>
       </div>
     </section>
-    <aside class=side>
-      <div class="panel channels">
+    <div class=side-handle id=sidehandle title="Drag to resize"></div>
+    <aside class=side id=side>
+      <div class="panel channels" id=chpanel>
         <h3>CHANNELS</h3>
         <div class=scroll id=chanlist></div>
       </div>
-      <div class="panel guide">
+      <div class="panel guide" id=guidepanel>
         <h3><span class=gv><button id=vlist class="vb on">LIST</button><button id=vgrid class=vb>GRID</button></span><span id=guidech style="color:var(--accent)"></span></h3>
         <div class=scroll id=guidelist></div>
         <div class=gridwrap id=gridwrap style=display:none></div>
@@ -275,18 +321,28 @@ video{display:block;width:100%;height:100%;object-fit:contain;background:#000}
     </aside>
   </main>
 </div>
+<button class=sidetab id=sidetab title="Show side panels">PANELS</button>
 <div class=toast id=toast></div>
 <script>
 const INITIAL = __INITIAL__;
 const $ = s => document.querySelector(s);
 const v = $('#v');
 
-// iOS/macOS Safari can't play our open-ended progressive MP4, but it plays
-// HLS natively. Use HLS only where the browser supports it natively (so we
-// need no hls.js dependency); everyone else keeps the lower-latency MP4 path.
-const USE_HLS = __HLS__ &&
+// Only Apple devices need HLS -- iOS/iPadOS and macOS Safari can't play our
+// open-ended progressive MP4. Everyone else (Windows/Linux/Android, all
+// browsers) keeps the lower-latency MP4 path, which starts in ~1s vs HLS's
+// multi-second segment buffering. We gate on the *platform*, not just
+// canPlayType, because some non-Apple browsers (e.g. Android Chrome) also
+// report HLS support but are far happier on MP4.
+const _ua = navigator.userAgent || '';
+const IS_APPLE =
+  /iPad|iPhone|iPod/.test(_ua) ||
+  (navigator.platform === 'MacIntel' && (navigator.maxTouchPoints || 0) > 1) ||  // iPadOS
+  (/Macintosh/.test(_ua) && /Safari/.test(_ua) && !/Chrome|Chromium|Edg|OPR|Firefox/.test(_ua));
+const USE_HLS = __HLS__ && IS_APPLE &&
   (v.canPlayType('application/vnd.apple.mpegurl') !== '' ||
    v.canPlayType('application/x-mpegURL') !== '');
+console.info('[RetroGuide] stream path:', USE_HLS ? 'HLS (Apple)' : 'MP4');
 
 /* ---- retro skin (era / CRT / B&W) ---- */
 const root = document.documentElement;
@@ -302,6 +358,103 @@ $('#era').onchange = e => { localStorage.retro_era = e.target.value; applySkin()
 $('#crt').onclick = () => { localStorage.retro_crt = root.dataset.crt==='on'?'off':'on'; applySkin(); };
 $('#bw').onclick  = () => { localStorage.retro_bw  = root.dataset.bw==='on'?'off':'on'; applySkin(); };
 applySkin();
+
+/* ---- English subtitles (burned in; reloads the stream) ---- */
+let subsOn = localStorage.retro_subs === 'on';
+function applySubs(){ $('#cc').classList.toggle('on', subsOn); }
+$('#cc').onclick = () => {
+  subsOn = !subsOn;
+  localStorage.retro_subs = subsOn ? 'on' : 'off';
+  applySubs();
+  if (cur) loadVideo(cur);
+  toast(subsOn ? 'Subtitles: English' : 'Subtitles off');
+};
+applySubs();
+
+/* ---- side panels: slide in/out + resizable width ---- */
+const mainEl = $('#main');
+const sideEl = $('#side');
+const SIDE_MIN = 260, SIDE_MAX = 640, SIDE_DEFAULT = 380;
+let chOpen = localStorage.retro_ch_open !== '0';
+let guideOpen = localStorage.retro_guide_open !== '0';
+function sideWidth(){
+  const w = parseInt(localStorage.retro_side_w || SIDE_DEFAULT, 10);
+  return Math.max(SIDE_MIN, Math.min(SIDE_MAX, isFinite(w) ? w : SIDE_DEFAULT));
+}
+function applySide(){
+  const open = chOpen || guideOpen;
+  mainEl.classList.toggle('side-open', open);
+  document.body.classList.toggle('side-closed', !open);
+  mainEl.style.setProperty('--side-w', sideWidth() + 'px');
+  $('#chpanel').classList.toggle('collapsed', !chOpen);
+  $('#guidepanel').classList.toggle('collapsed', !guideOpen);
+  sideEl.classList.toggle('ch-only', chOpen && !guideOpen);
+  sideEl.classList.toggle('guide-only', guideOpen && !chOpen);
+  $('#togch').classList.toggle('on', chOpen);
+  $('#togguide').classList.toggle('on', guideOpen);
+  localStorage.retro_ch_open = chOpen ? '1' : '0';
+  localStorage.retro_guide_open = guideOpen ? '1' : '0';
+}
+$('#togch').onclick = () => { chOpen = !chOpen; applySide(); };
+$('#togguide').onclick = () => { guideOpen = !guideOpen; applySide(); };
+$('#sidetab').onclick = () => {
+  if(!chOpen && !guideOpen){ chOpen = true; guideOpen = true; }
+  applySide();
+};
+(function wireResize(){
+  const handle = $('#sidehandle');
+  let dragging = false, startX = 0, startW = 0;
+  const onMove = (ev) => {
+    if(!dragging) return;
+    const x = ev.touches ? ev.touches[0].clientX : ev.clientX;
+    const next = Math.max(SIDE_MIN, Math.min(SIDE_MAX, startW - (x - startX)));
+    mainEl.style.setProperty('--side-w', next + 'px');
+  };
+  const onUp = () => {
+    if(!dragging) return;
+    dragging = false;
+    mainEl.classList.remove('resizing');
+    localStorage.retro_side_w = String(parseInt(
+      getComputedStyle(mainEl).getPropertyValue('--side-w'), 10) || SIDE_DEFAULT);
+    window.removeEventListener('pointermove', onMove);
+    window.removeEventListener('pointerup', onUp);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('touchend', onUp);
+  };
+  const onDown = (ev) => {
+    if(!mainEl.classList.contains('side-open')) return;
+    dragging = true;
+    mainEl.classList.add('resizing');
+    startX = ev.touches ? ev.touches[0].clientX : ev.clientX;
+    startW = sideWidth();
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('touchmove', onMove, {passive:false});
+    window.addEventListener('touchend', onUp);
+    ev.preventDefault();
+  };
+  handle.addEventListener('pointerdown', onDown);
+  handle.addEventListener('touchstart', onDown, {passive:false});
+})();
+applySide();
+
+/* ---- picture-in-picture ---- */
+const pipBtn = $('#pip');
+if (pipBtn) {
+  if (!document.pictureInPictureEnabled) { pipBtn.style.display = 'none'; }
+  pipBtn.onclick = async () => {
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else await v.requestPictureInPicture();
+    } catch (e) { toast('Picture-in-picture unavailable'); }
+  };
+}
+
+/* ---- channel-change static burst ---- */
+function flashStatic(){
+  const s = $('#static'); if(!s) return;
+  s.classList.remove('go'); void s.offsetWidth; s.classList.add('go');
+}
 let CH = [];            // channels from /api/now
 let cur = null;         // current slug
 let skew = 0;           // server_now - client_now (seconds)
@@ -325,17 +478,25 @@ const RESYNC_MIN_GAP = 45;// don't resync more than this often
 const ERR_MAX = 30000;
 
 function loadVideo(slug){
+  // This load supersedes any pending error-retry; cancel it so we never fire a
+  // redundant reload on top of an intentional channel change / transition.
+  clearTimeout(errTimer); errTimer = null;
   streamLoadWall = liveNow();
   const path = USE_HLS ? '/index.m3u8' : '/live.mp4';
-  v.src = '/c/'+slug+path+'?t='+Date.now();
+  v.src = '/c/'+slug+path+'?t='+Date.now()+(subsOn?'&subs=1':'');
   v.load(); v.play().catch(()=>{});
 }
-v.addEventListener('ended', ()=>{ errDelay=2500; if(cur) loadVideo(cur); refreshNow(); });
-v.addEventListener('playing', ()=>{ errDelay=2500; });  // healthy: reset backoff
+v.addEventListener('ended', ()=>{ if(cur) loadVideo(cur); refreshNow(); });
+v.addEventListener('playing',  ()=>{ errDelay=2500; });  // healthy: reset backoff
+v.addEventListener('canplay',  ()=>{ errDelay=2500; });
 v.addEventListener('error', ()=>{
   if(!cur) return;
+  // Switching channels / reloading aborts the in-flight fetch, which browsers
+  // report as MEDIA_ERR_ABORTED (1). That's us, not a failure -- don't back off
+  // or schedule a redundant reload (that caused the 5-10s switch stalls).
+  if(v.error && v.error.code === 1) return;
   clearTimeout(errTimer);
-  errTimer = setTimeout(()=>loadVideo(cur), errDelay);
+  errTimer = setTimeout(()=>{ if(cur) loadVideo(cur); }, errDelay);
   errDelay = Math.min(ERR_MAX, errDelay*2);  // back off so a stuck client can't storm the host
 });
 
@@ -360,6 +521,7 @@ function resyncCheck(){
 
 function selectChannel(slug, {play=true}={}){
   if(!slug) return;
+  if(play && slug!==cur) flashStatic();
   cur = slug;
   history.replaceState(null,'', '/c/'+slug);
   const c = CH.find(x=>x.slug===slug);
@@ -438,10 +600,12 @@ function renderGuide(){
     if(!p) return;
     if(p.daypart && p.daypart!==lastDay){ html+=`<div class=daypart>${esc(p.daypart.toUpperCase())}</div>`; lastDay=p.daypart; }
     const on = p.start<=now && now<p.end;
-    html+=`<div class="g-row${on?' now':''}">
+    const miss = p.playable===false;
+    html+=`<div class="g-row${on?' now':''}${miss?' missing':''}">
       <div class=gt>${fmt(p.start)}</div>
-      <div class=gm><div class=gtitle>${esc(p.title)}${on?' <span class=onair>ON AIR</span>':''}</div>
-      <div class=gsub>${esc(p.subtitle||'')}</div></div></div>`;
+      <div class=gm><div class=gtitle>${esc(p.title)}${on?' <span class=onair>ON AIR</span>':''}${miss?' ⚠':''}</div>
+      <div class=gsub>${esc(p.subtitle||'')}</div>
+      ${p.blurb?`<div class=gblurb>${esc(p.blurb)}</div>`:''}</div></div>`;
   });
   box.innerHTML = html || '<div class=empty>No upcoming programs.</div>';
 }
@@ -553,13 +717,37 @@ async function refreshNow(){
 }
 function esc(s){ return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
-/* ---- keyboard: arrows surf, digits tune ---- */
+/* ---- keyboard: arrows surf, digits tune (multi-digit for 10+) ---- */
+let numBuf='', numTimer=null;
+function commitNum(){
+  clearTimeout(numTimer); numTimer=null;
+  if(!numBuf) return;
+  const n=parseInt(numBuf,10); numBuf='';
+  if(n>=1 && n<=CH.length) selectChannel(CH[n-1].slug);
+}
+function pushDigit(d){
+  if(!numBuf && d==='0') return;         // channels start at 1
+  numBuf+=d; toast('CH '+numBuf);
+  const total=CH.length, n=parseInt(numBuf,10);
+  const canExt=Array.from({length:total},(_,k)=>String(k+1))
+    .some(s=>s.startsWith(numBuf) && s.length>numBuf.length);
+  clearTimeout(numTimer);
+  if(n>total || !canExt){ commitNum(); }
+  else { numTimer=setTimeout(commitNum,1100); }
+}
 document.addEventListener('keydown',e=>{
-  if(e.target.tagName==='INPUT') return;
+  if(e.target.tagName==='INPUT' || e.target.tagName==='SELECT') return;
   const i=CH.findIndex(x=>x.slug===cur);
   if(e.key==='ArrowDown'){ e.preventDefault(); selectChannel(CH[(i+1)%CH.length].slug); }
   else if(e.key==='ArrowUp'){ e.preventDefault(); selectChannel(CH[(i-1+CH.length)%CH.length].slug); }
-  else if(/^[1-9]$/.test(e.key) && CH[+e.key-1]){ selectChannel(CH[+e.key-1].slug); }
+  else if(e.key==='Enter'){ commitNum(); }
+  else if(e.key==='[' || e.key===']'){
+    e.preventDefault();
+    if(e.key===']'){ chOpen = !chOpen; }
+    else { guideOpen = !guideOpen; }
+    applySide();
+  }
+  else if(/^[0-9]$/.test(e.key)){ pushDigit(e.key); }
 });
 
 (async function init(){

@@ -57,17 +57,37 @@ class TVMazeClient:
         if stype in ("Animation", "Reality", "Documentary"):
             genres = genres + [stype]
         image = show.get("image") or {}
+        # Network country is a strong anime signal (JP).
+        network = show.get("network") or show.get("webChannel") or {}
+        country = (network.get("country") or {}).get("code")
+        # Pull top cast when the embed is present (search results rarely include
+        # it; a follow-up /shows/{id}?embed=cast fills it in).
+        cast = self._cast(show.get("id"))
         return TitleMeta(
             tmdb_id=show.get("id"),            # external provider id (TVmaze)
             overview=_strip_html(show.get("summary")),
             genres=genres,
-            cast=[],
+            cast=cast,
             rating=(show.get("rating") or {}).get("average"),
             poster_url=image.get("medium") or image.get("original"),
             runtime=show.get("averageRuntime") or show.get("runtime"),
             name=show.get("name"),
             year=_premiered_year(show.get("premiered")),
+            origin=country,
         )
+
+    def _cast(self, show_id: int | None) -> list[str]:
+        if not show_id:
+            return []
+        data = self._get(f"/shows/{show_id}", embed="cast")
+        if not data:
+            return []
+        out: list[str] = []
+        for entry in (data.get("_embedded") or {}).get("cast", [])[:4]:
+            person = (entry.get("person") or {}).get("name")
+            if person:
+                out.append(person)
+        return out
 
     def _pick(self, results: list[dict], year: int | None) -> dict | None:
         """Pick the best show match, disambiguating by year when we know it."""

@@ -24,6 +24,7 @@ from pathlib import Path
 from ..config import Config
 from ..db import connect
 from .. import repo
+from .media import encode_chain
 from .procutil import kill_proc
 
 log = logging.getLogger("tvguide.stream")
@@ -34,7 +35,11 @@ _FIRST_SEG_WAIT = 14    # how long /index.m3u8 waits for ffmpeg's first segment
 
 
 def _now_program(slug: str):
-    """(program, offset_seconds) for the live moment, or (None, 0)."""
+    """(program, offset_seconds) for the live moment, or (None, 0).
+
+    Skips unplayable/missing files so HLS never spawns ffmpeg on a dead path.
+    """
+    import os
     conn = connect()
     try:
         ch = next((c for c in repo.list_channels(conn) if c.slug == slug), None)
@@ -42,6 +47,13 @@ def _now_program(slug: str):
             return None, 0.0
         now = time.time()
         prog = repo.program_at(conn, ch.id, now)
+        if prog is not None and (not prog.playable or not prog.path
+                                 or not os.path.isfile(prog.path)):
+            prog = repo.next_playable(conn, ch.id, prog.end_ts if prog else now)
+            if prog is None:
+                return None, 0.0
+            # Joined mid-slot of the next playable show.
+            return prog, max(0.0, now - prog.start_ts) if prog.start_ts <= now else 0.0
         if prog is None or not prog.path:
             return None, 0.0
         return prog, max(0.0, now - prog.start_ts)
@@ -52,9 +64,11 @@ def _now_program(slug: str):
 class HlsSession:
     """One ffmpeg transcoding the current program of a channel to HLS."""
 
-    def __init__(self, slug: str, program, offset: float, cfg: Config):
+    def __init__(self, slug: str, program, offset: float, cfg: Config,
+                 subs: bool = False):
         self.slug = slug
         self.program_id = program.id
+        self.subs = subs
         self.cfg = cfg
         self.dir = Path(tempfile.mkdtemp(prefix=f"rg-hls-{slug}-"))
         self.playlist = self.dir / "index.m3u8"
@@ -65,17 +79,15 @@ class HlsSession:
 
     def _spawn(self, path: str, offset: float):
         import subprocess
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+        # English audio default (+ optional burned-in English subs), shared with
+        # the MP4 path so behaviour matches everywhere.
+        pre, post = encode_chain(
+            path, transcode=True, subs=self.subs, tmpdir=str(self.dir),
+            normalize_audio=self.cfg.stream.normalize_audio)
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", *pre]
         if offset > 1:
             cmd += ["-ss", f"{offset:.3f}"]
-        cmd += [
-            "-re", "-i", path,
-            "-map", "0:v:0", "-map", "0:a:0?", "-sn",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-profile:v", "main", "-pix_fmt", "yuv420p",
-            "-vf", "scale=-2:min(720\\,ih)", "-g", "48", "-keyint_min", "48",
-            "-sc_threshold", "0",
-            "-c:a", "aac", "-b:a", "128k", "-ac", "2",
+        cmd += ["-re", "-i", path, *post,
             "-f", "hls", "-hls_time", "4", "-hls_list_size", "6",
             # No omit_endlist: ffmpeg writes #EXT-X-ENDLIST when the program
             # ends, which the page uses as the cue to roll to the next show.
@@ -133,7 +145,7 @@ class HlsManager:
             target=self._reap_loop, name="retroguide-hls-reaper", daemon=True)
         self._reaper.start()
 
-    def playlist(self, slug: str) -> bytes | None:
+    def playlist(self, slug: str, subs: bool = False) -> bytes | None:
         """Ensure a session for the current program and return its playlist.
         Returns None for off-air / busy / not-ready (the client retries)."""
         prog, offset = _now_program(slug)
@@ -143,7 +155,8 @@ class HlsManager:
 
         with self._lock:
             sess = self._sessions.get(slug)
-            if sess is not None and (not sess.alive or sess.program_id != prog.id):
+            if sess is not None and (not sess.alive or sess.program_id != prog.id
+                                     or sess.subs != subs):
                 self._teardown(slug, sess)
                 sess = None
             if sess is None:
@@ -152,7 +165,7 @@ class HlsManager:
                                 self.state.active, self.state.max_streams, slug)
                     return None
                 try:
-                    sess = HlsSession(slug, prog, offset, self.cfg)
+                    sess = HlsSession(slug, prog, offset, self.cfg, subs=subs)
                 except Exception:  # noqa: BLE001
                     self.state.release()
                     log.exception("hls session start failed for %s", slug)

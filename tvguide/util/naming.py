@@ -7,6 +7,8 @@ from pathlib import Path
 
 from guessit import guessit
 
+from .media_ok import is_partial_path
+
 # Buckets used by the scheduler to slot content into dayparts.
 BUCKETS = [
     "preschool",        # very young kids
@@ -55,15 +57,49 @@ class ParsedMedia:
     raw_guess: dict
 
 
+# "extras"/"featurette"/"behind the scenes" name *bonus-content folders*. They
+# must not knock out a real season folder that merely mentions them (e.g.
+# "... Season 4 S04 + Extras"), nor a show actually called "Extras". So for
+# these we only exclude a path component with no season/episode/year signal.
+_BONUS_FOLDER_PATTERNS = ("extras", "featurette", "behind the scenes")
+_CONTENT_SIGNAL = re.compile(
+    r"(s\d{1,2}[\s._-]?e\d{1,3})|(\b\d{1,2}x\d{2,3}\b)|(\bseasons?\s*\d+)"
+    r"|(\bs\d{1,2}\b)|(\b(19|20)\d{2}\b)",
+    re.I,
+)
+
+
 def is_excluded(path: Path, patterns: list[str]) -> bool:
-    s = str(path).lower()
     name = path.name.lower()
+    # Hidden / partial download files (.part, .crdownload, .!qB, …).
+    if is_partial_path(path):
+        return True
+    s = str(path).lower()
+    parts = [part.lower() for part in path.parts]
     for p in patterns:
         pl = p.lower()
-        if pl in s:
-            return True
-    # Hidden / partial download files.
-    if name.startswith(".") or name.endswith(".parts"):
+        if pl not in s:
+            continue
+        if pl in _BONUS_FOLDER_PATTERNS:
+            # Only a component *dedicated* to bonus content (no episode/year of
+            # its own) counts -- so "Featurettes" is skipped but "S04 + Extras"
+            # and the sitcom "Extras (2005)" are kept.
+            if any(pl in part and not _CONTENT_SIGNAL.search(part) for part in parts):
+                return True
+            continue
+        return True
+    return False
+
+
+def is_special_episode(season: int | None, episode: int | None) -> bool:
+    """True for bonus/special numbering that should not enter regular rotation."""
+    if season is None:
+        return False
+    if season == 0:
+        return True
+    if season >= 90:
+        return True
+    if episode is not None and episode == 0:
         return True
     return False
 
@@ -210,13 +246,37 @@ _BUCKET_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def heuristic_bucket(name: str, kind: str, genres: list[str] | None = None) -> str:
+def looks_like_anime(name: str, path: str | None = None,
+                     genres: list[str] | None = None,
+                     origin: str | None = None) -> bool:
+    """True when title/path/genres/origin strongly indicate Japanese animation."""
+    low = (name or "").lower()
+    g = {x.lower() for x in (genres or [])}
+    if "anime" in g:
+        return True
+    if origin and origin.lower() in ("jp", "japan", "ja", "jpn"):
+        if "animation" in g or _ANIME_HINTS.search(low):
+            return True
+    if any(kw in low for kw in _BUCKET_KEYWORDS["anime"]):
+        return True
+    hay = f"{low} {path or ''}".lower()
+    if _ANIME_HINTS.search(hay):
+        # Require an animation signal so "subbed" live-action doesn't match.
+        if "animation" in g or "anime" in hay or "ova" in hay:
+            return True
+    return False
+
+
+def heuristic_bucket(name: str, kind: str, genres: list[str] | None = None,
+                     path: str | None = None, origin: str | None = None) -> str:
     if kind == "movie":
         return "film"
     low = name.lower()
     for bucket, kws in _BUCKET_KEYWORDS.items():
         if any(kw in low for kw in kws):
             return bucket
+    if looks_like_anime(name, path, genres, origin):
+        return "anime"
     if genres:
         g = {x.lower() for x in genres}
         # Anime first (TVmaze tags it explicitly as a genre).

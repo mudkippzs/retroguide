@@ -5,6 +5,8 @@ import json
 import subprocess
 from dataclasses import dataclass
 
+from ..util.media_ok import MIN_DURATION_SEC
+
 
 @dataclass
 class ProbeResult:
@@ -18,7 +20,12 @@ class ProbeResult:
 
 
 def probe(path: str, timeout: int = 60) -> ProbeResult:
-    """Run ffprobe on a file. Tolerant of network hiccups / odd files."""
+    """Run ffprobe on a file. Tolerant of network hiccups / odd files.
+
+    ``ok`` is True only when we found a real video stream with a usable
+    duration -- partial/corrupt files that parse some JSON but have no
+    video (or no duration) are rejected so they never enter the schedule.
+    """
     cmd = [
         "ffprobe", "-v", "quiet", "-print_format", "json",
         "-show_format", "-show_streams", path,
@@ -33,7 +40,8 @@ def probe(path: str, timeout: int = 60) -> ProbeResult:
         return ProbeResult(None, None, None, None, None, False, "ffprobe-missing")
 
     if out.returncode != 0 or not out.stdout.strip():
-        return ProbeResult(None, None, None, None, None, False, out.stderr[:200] or "probe-failed")
+        return ProbeResult(None, None, None, None, None, False,
+                           out.stderr[:200] or "probe-failed")
 
     try:
         data = json.loads(out.stdout)
@@ -61,5 +69,15 @@ def probe(path: str, timeout: int = 60) -> ProbeResult:
                 except (TypeError, ValueError):
                     pass
             break
+
+    if not vcodec:
+        return ProbeResult(duration, None, width, height, container, False,
+                           "no-video-stream")
+    if duration is None or duration < MIN_DURATION_SEC:
+        return ProbeResult(duration, vcodec, width, height, container, False,
+                           "bad-duration")
+    if not width or not height:
+        return ProbeResult(duration, vcodec, width, height, container, False,
+                           "no-dimensions")
 
     return ProbeResult(duration, vcodec, width, height, container, True)

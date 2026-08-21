@@ -1,17 +1,21 @@
 """Walk the library roots and build the SQLite catalog."""
 from __future__ import annotations
 
+import logging
 import os
+import re as _re
 import sqlite3
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from ..config import Config
+from ..util.media_ok import is_partial_path
 from ..util.naming import (
     has_episode_marker,
     heuristic_bucket,
     is_excluded,
+    is_special_episode,
     looks_like_video,
     parse_media,
     series_title_from_name,
@@ -19,14 +23,13 @@ from ..util.naming import (
 )
 from .probe import probe
 
+log = logging.getLogger("tvguide.scan")
+
 ProgressCb = Callable[[str, int, int], None]  # message, current, total
 
 
 def _noop(msg: str, cur: int, total: int) -> None:  # pragma: no cover
     pass
-
-
-import re as _re
 
 # Folders that group episodes but aren't the show itself.
 _SEASON_PREFIX = _re.compile(
@@ -158,14 +161,52 @@ class Indexer:
                 progress(f"Indexing {fp.name[:48]}", i + 1, total)
 
         self.conn.commit()
+        purged = self._purge_stale(seen_paths={str(fp) for _, fp in discovered})
+        stats["purged"] = purged
         self._finalize_orders()
         progress("Scan complete", total, total)
         return stats
+
+    def _purge_stale(self, seen_paths: set[str] | None = None) -> int:
+        """Remove catalog rows for files that vanished or are partial downloads.
+
+        Only deletes when the path is gone from disk (or is a partial). Offline
+        mounts must not wipe the catalog — an unreachable root leaves rows alone.
+        """
+        rows = self.conn.execute("SELECT id, path FROM media_files").fetchall()
+        gone: list[int] = []
+        for r in rows:
+            path = r["path"]
+            if is_partial_path(path) or not Path(path).is_file():
+                gone.append(r["id"])
+        if not gone:
+            return 0
+        for fid in gone:
+            # Clear every FK that references media_files before the DELETE.
+            # programs keeps a copy of file_id for playback; leaving it set
+            # raises IntegrityError under PRAGMA foreign_keys=ON.
+            self.conn.execute("DELETE FROM programs WHERE file_id=?", (fid,))
+            self.conn.execute("UPDATE episodes SET file_id=NULL WHERE file_id=?", (fid,))
+            self.conn.execute(
+                "UPDATE titles SET movie_file_id=NULL WHERE movie_file_id=?", (fid,))
+            self.conn.execute("DELETE FROM media_files WHERE id=?", (fid,))
+        self.conn.commit()
+        log.info("purged %d stale/missing media_files", len(gone))
+        return len(gone)
 
     def reindex_from_db(self, progress: ProgressCb = _noop) -> dict:
         """Rebuild titles/episodes from already-discovered files (no network
         walk, no reprobe). Used to re-apply improved parsing/dedup quickly."""
         stats = {"files": 0, "episodes": 0, "movies": 0, "skipped": 0}
+        # Keep broadcast progress across reindex so shows don't restart at S01E01.
+        saved_playheads = {
+            (r["name"] or "").strip().lower(): int(r["next_order"])
+            for r in self.conn.execute(
+                "SELECT t.name, p.next_order FROM playheads p "
+                "JOIN titles t ON t.id=p.title_id WHERE t.kind='series'"
+            )
+            if (r["name"] or "").strip()
+        }
         self.conn.execute("DELETE FROM programs")
         self.conn.execute("DELETE FROM playheads")
         self.conn.execute("DELETE FROM episodes")
@@ -184,8 +225,41 @@ class Indexer:
                 progress("Reindexing catalog", i + 1, total)
         self.conn.commit()
         self._finalize_orders()
+        self._restore_playheads(saved_playheads)
         progress("Reindex complete", total, total)
         return stats
+
+    def _restore_playheads(self, saved: dict[str, int]) -> None:
+        """Remap saved abs_order cursors onto rebuilt series by title name."""
+        if not saved:
+            return
+        for row in self.conn.execute(
+            "SELECT id, name FROM titles WHERE kind='series'"
+        ):
+            key = (row["name"] or "").strip().lower()
+            if key not in saved:
+                continue
+            cursor = saved[key]
+            # Clamp to a still-valid abs_order when the catalog shrank/grew.
+            bounds = self.conn.execute(
+                "SELECT MIN(abs_order) AS lo, MAX(abs_order) AS hi "
+                "FROM episodes WHERE title_id=?",
+                (row["id"],),
+            ).fetchone()
+            if bounds is None or bounds["lo"] is None:
+                continue
+            lo, hi = int(bounds["lo"]), int(bounds["hi"])
+            if cursor > hi:
+                cursor = lo
+            elif cursor < lo:
+                cursor = lo
+            self.conn.execute(
+                "INSERT INTO playheads(title_id, next_order) VALUES(?, ?) "
+                "ON CONFLICT(title_id) DO UPDATE SET "
+                "next_order=excluded.next_order",
+                (row["id"], cursor),
+            )
+        self.conn.commit()
 
     def _series_name(self, fp: Path, root_kind: str) -> str:
         """Identify a series by the nearest meaningful folder to the file.
@@ -239,9 +313,36 @@ class Indexer:
             kind = "episode"
 
         if kind == "episode" and parsed.episode is not None:
+            # Bonus/special numbering (S00, S99E00, E00) stays out of the
+            # normal playhead -- attach under the series but mark via season.
             series_name = self._series_name(fp, root_kind) or parsed.title
+            # Fold "Show: Superfan Episodes" style bonus folders back into the
+            # parent show when the filename itself is a real episode marker.
+            if ":" in series_name or " - " in series_name:
+                base = series_name.split(":")[0].split(" - ")[0].strip()
+                if base and len(base) >= 3 and not is_special_episode(
+                        parsed.season, parsed.episode):
+                    # Keep the folder title for true spin-offs; only collapse
+                    # when the file is a regular SxxExx under a "Superfan"/
+                    # "Extended" style packaging folder.
+                    low = series_name.lower()
+                    if any(t in low for t in ("superfan", "extended cut",
+                                              "extended edition", "bonus")):
+                        series_name = base
             tid = self._find_or_create_series(series_name, parsed.year)
             self._upsert_episode(tid, file_id, parsed)
+            stats["episodes"] += 1
+        elif kind == "episode" and root_kind == "tv":
+            # TV-root file without a parseable episode number: keep as a
+            # series special (S00) rather than inventing a movie title.
+            series_name = self._series_name(fp, root_kind) or parsed.title
+            tid = self._find_or_create_series(series_name, parsed.year)
+            # Synthesize a special slot from the filename hash so it doesn't
+            # collide with real episodes, and stays out of regular rotation.
+            ep_num = abs(hash(fp.name)) % 9000 + 100
+            class _P:
+                season, episode, episode_title = 0, ep_num, parsed.title
+            self._upsert_episode(tid, file_id, _P())
             stats["episodes"] += 1
         else:
             tid = self._find_or_create_movie(parsed.title, parsed.year, file_id)
@@ -348,8 +449,16 @@ class Indexer:
                 done += 1
             else:
                 self.conn.execute(
-                    "UPDATE media_files SET probe_state='error' WHERE id=?", (row["id"],)
+                    "UPDATE media_files SET probe_state='error', duration_sec=NULL, "
+                    "video_codec=NULL WHERE id=?", (row["id"],)
                 )
+                # Unlink so the scheduler never treats this as playable.
+                self.conn.execute(
+                    "UPDATE episodes SET file_id=NULL WHERE file_id=?", (row["id"],))
+                self.conn.execute(
+                    "UPDATE titles SET movie_file_id=NULL WHERE movie_file_id=?",
+                    (row["id"],))
+                log.warning("probe failed for %s: %s", row["path"], res.error)
             if i % 25 == 0:
                 self.conn.commit()
                 progress(f"Probing {Path(row['path']).name[:48]}", i + 1, total)

@@ -44,7 +44,8 @@ def cmd_reindex(args, cfg, conn):
 def cmd_enrich(args, cfg, conn):
     from .enrich.enricher import Enricher
     t0 = time.time()
-    n = Enricher(conn, cfg).run(_progress, limit=args.limit, kind=args.kind)
+    n = Enricher(conn, cfg).run(
+        _progress, limit=args.limit, kind=args.kind, force=args.force)
     print(f"\nEnriched {n} titles in {time.time()-t0:.1f}s")
 
 
@@ -87,6 +88,7 @@ def cmd_serve(args, cfg, conn):
 
 
 def cmd_stats(args, cfg, conn):
+    from . import repo
     def one(q):
         return conn.execute(q).fetchone()[0]
     n_files = one("SELECT COUNT(*) FROM media_files")
@@ -94,21 +96,52 @@ def cmd_stats(args, cfg, conn):
     n_series = one("SELECT COUNT(*) FROM titles WHERE kind='series'")
     n_movies = one("SELECT COUNT(*) FROM titles WHERE kind='movie'")
     n_eps = one("SELECT COUNT(*) FROM episodes")
-    n_enriched = one("SELECT COUNT(*) FROM titles WHERE enriched_at IS NOT NULL")
+    n_enriched = one(
+        "SELECT COUNT(*) FROM titles WHERE enrich_state='done'")
     n_programs = one("SELECT COUNT(*) FROM programs")
+    integrity = repo.catalog_integrity(conn)
     print(f"Database: {DB_PATH}")
     print(f"  media files    : {n_files}")
     print(f"  probed         : {n_probed}")
+    print(f"  probe errors   : {integrity['probe_error']}")
+    print(f"  missing paths  : {integrity['missing_paths']}")
     print(f"  series         : {n_series}")
     print(f"  movies         : {n_movies}")
+    print(f"  movies no meta : {integrity['movies_no_overview']}")
     print(f"  episodes       : {n_eps}")
     print(f"  enriched titles: {n_enriched}")
     print(f"  programs       : {n_programs}")
+    print(f"  unplayable     : {integrity['unplayable_programs']}")
     print("  buckets:")
     for row in conn.execute(
         "SELECT bucket, COUNT(*) c FROM titles GROUP BY bucket ORDER BY c DESC"
     ):
         print(f"     {row['bucket'] or '(none)':<18} {row['c']}")
+
+
+def cmd_doctor(args, cfg, conn):
+    """Integrity report with non-zero exit when thresholds are breached."""
+    from . import repo
+    stats = repo.catalog_integrity(conn)
+    print(f"Database: {DB_PATH}")
+    for k, v in stats.items():
+        print(f"  {k:<22} {v}")
+    # Fail when the guide would air dead air. Orphan probe-error rows that are
+    # already unlinked from titles/episodes are a warning, not a hard fail.
+    hard = stats["missing_paths"] + stats["unplayable_programs"]
+    if hard:
+        print(f"\nFAIL: {hard} integrity issue(s) — rescan/probe or rebuild schedule")
+        return 1
+    warns = []
+    if stats["probe_error"]:
+        warns.append(f"{stats['probe_error']} unreadable files (excluded from schedule)")
+    if stats["movies_no_overview"]:
+        warns.append(f"{stats['movies_no_overview']} movies lack overview — run enrich")
+    if warns:
+        print("\nWARN: " + "; ".join(warns))
+    else:
+        print("\nOK")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,11 +159,14 @@ def main(argv: list[str] | None = None) -> int:
     se = sub.add_parser("enrich", help="fetch metadata + write retro blurbs")
     se.add_argument("--limit", type=int, default=None)
     se.add_argument("--kind", choices=["series", "movie", "all"], default="all")
+    se.add_argument("--force", action="store_true",
+                    help="re-enrich titles already marked done (e.g. after enabling TMDB)")
 
     sub.add_parser("tag", help="tag franchises + holidays for special events")
     sub.add_parser("schedule", help="build the 7-day programming grid")
     sub.add_parser("blurbs", help="write retro-voice blurbs for scheduled programs")
     sub.add_parser("stats", help="show catalog statistics")
+    sub.add_parser("doctor", help="catalog integrity check (exit 1 on problems)")
 
     sv = sub.add_parser("serve", help="stream the live channels to your LAN browser")
     sv.add_argument("--port", type=int, default=None)
@@ -145,10 +181,11 @@ def main(argv: list[str] | None = None) -> int:
     dispatch = {
         "scan": cmd_scan, "probe": cmd_probe, "reindex": cmd_reindex,
         "enrich": cmd_enrich, "tag": cmd_tag, "schedule": cmd_schedule,
-        "blurbs": cmd_blurbs, "stats": cmd_stats, "serve": cmd_serve,
+        "blurbs": cmd_blurbs, "stats": cmd_stats, "doctor": cmd_doctor,
+        "serve": cmd_serve,
     }
-    dispatch[args.cmd](args, cfg, conn)
-    return 0
+    rc = dispatch[args.cmd](args, cfg, conn)
+    return int(rc or 0)
 
 
 if __name__ == "__main__":

@@ -19,15 +19,25 @@ from datetime import date
 
 from ..enrich.tagging import MCU_ORIGINS
 
+from ..util.media_ok import PLAYABLE_SQL
+
 # The film pool query mirrors the scheduler's so rows carry ``file_dur`` and
-# everything _place_film expects.
+# everything _place_film expects. Only probe-valid, playable files qualify.
 _FILM_SQL = (
-    "SELECT t.*, m.duration_sec AS file_dur FROM titles t "
+    "SELECT t.*, m.duration_sec AS file_dur, m.path AS file_path FROM titles t "
     "JOIN media_files m ON m.id = t.movie_file_id "
-    "WHERE t.kind='movie' AND t.movie_file_id IS NOT NULL "
+    f"WHERE t.kind='movie' AND t.movie_file_id IS NOT NULL AND {PLAYABLE_SQL} "
 )
 
 EVENT_CHANNEL = "cinema"
+
+
+def _pick_channel(existing: set[str], preferred: tuple[str, ...]) -> str:
+    """First preferred channel that actually exists, else the default cinema."""
+    for slug in preferred:
+        if slug in existing:
+            return slug
+    return EVENT_CHANNEL
 
 
 @dataclass
@@ -49,18 +59,23 @@ def _titlecase(key: str) -> str:
     return " ".join(w.capitalize() for w in key.split())
 
 
+def _on_disk(rows: list[sqlite3.Row]) -> list[sqlite3.Row]:
+    import os
+    return [r for r in rows if r["file_path"] and os.path.isfile(r["file_path"])]
+
+
 def _films_by_tag(conn: sqlite3.Connection, tag: str) -> list[sqlite3.Row]:
-    return conn.execute(
+    return _on_disk(conn.execute(
         _FILM_SQL + 'AND t.tags LIKE ? ORDER BY t.rating DESC, t.year',
         (f'%"{tag}"%',),
-    ).fetchall()
+    ).fetchall())
 
 
 def _films_by_franchise(conn: sqlite3.Connection, franchise: str) -> list[sqlite3.Row]:
-    return conn.execute(
+    return _on_disk(conn.execute(
         _FILM_SQL + "AND t.franchise=? ORDER BY t.year",
         (franchise,),
-    ).fetchall()
+    ).fetchall())
 
 
 def _mcu_origins(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -107,30 +122,42 @@ def _spontaneous(conn: sqlite3.Connection, d: date) -> Takeover | None:
 
 
 def active_takeovers(conn: sqlite3.Connection, d: date) -> dict[str, Takeover]:
-    """Channel-slug -> Takeover for the given broadcast day (empty if none)."""
+    """Channel-slug -> Takeover for the given broadcast day (empty if none).
+
+    Different events land on different film channels when they exist, so a
+    Halloween fright night runs on the Gold channel while Christmas owns the
+    main cinema -- events no longer all pile onto one channel.
+    """
     out: dict[str, Takeover] = {}
+    existing = {r["slug"] for r in conn.execute("SELECT slug FROM channels")}
     m, day = d.month, d.day
     takeover: Takeover | None = None
+    target = EVENT_CHANNEL
 
     if m == 12 and 18 <= day <= 26:
         films = _films_by_tag(conn, "christmas")
         if films:
             takeover = Takeover("Christmas Cinema", films)
+            target = _pick_channel(existing, ("cinema", "greats", "premiere"))
     elif m == 10 and 25 <= day <= 31:
         films = _films_by_tag(conn, "horror")
         if films:
             takeover = Takeover("Halloween Fright Night", films)
+            target = _pick_channel(existing, ("greats", "premiere", "cinema"))
     elif (m, day) == (2, 14):
         films = _films_by_tag(conn, "romance")
         if films:
             takeover = Takeover("Valentine's Double Feature", films)
+            target = _pick_channel(existing, ("premiere", "greats", "cinema"))
     elif (m, day) == (5, 4):
         films = _films_by_franchise(conn, "star wars")
         if films:
             takeover = Takeover("Star Wars Bonanza", films)
+            target = _pick_channel(existing, ("cinema", "premiere"))
     elif d.weekday() >= 5:          # Saturday or Sunday
         takeover = _spontaneous(conn, d)
+        target = _pick_channel(existing, ("premiere", "greats", "cinema"))
 
     if takeover is not None:
-        out[EVENT_CHANNEL] = takeover
+        out[target] = takeover
     return out

@@ -100,6 +100,7 @@ class _ProgItem(QGraphicsRectItem):
         self._view = view
         self._accent = accent
         self._is_now = False
+        self._missing = (not getattr(program, "playable", True)) or program.path is None
         self.setAcceptHoverEvents(True)
         # Clip child text to this box so long descriptions never spill out.
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemClipsChildrenToShape, True)
@@ -137,6 +138,11 @@ class _ProgItem(QGraphicsRectItem):
         if self._is_now:
             self.setBrush(QBrush(QColor("#2c1622")))
             self.setPen(QPen(QColor(_NOW_COLOR), 2))
+        elif self._missing:
+            # Unavailable file: dim the block and dash its border.
+            self.setBrush(QBrush(QColor("#0c141d")))
+            pen = QPen(QColor("#33475d"), 1, Qt.PenStyle.DashLine)
+            self.setPen(pen)
         else:
             self.setBrush(QBrush(QColor(theme.PANEL_HI)))
             self.setPen(QPen(QColor(self._accent), 1))

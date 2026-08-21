@@ -24,18 +24,21 @@ import logging
 import mimetypes
 import os
 import re
+import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from ..config import Config
 from ..db import connect
 from .. import repo
 from . import web
 from .hls import HlsManager
+from .media import encode_chain, english_audio_map
 from .procutil import kill_proc
 
 log = logging.getLogger("tvguide.stream")
@@ -102,57 +105,25 @@ def lan_ip() -> str:
         s.close()
 
 
-_audio_map_cache: dict[str, str] = {}
-_audio_map_lock = threading.Lock()
-
-
 def _english_audio_map(path: str) -> str:
-    """Pick an English audio stream (``0:a:N``) when one is tagged, else the
-    first. Cached per path so we don't run an ffprobe on every tune-in."""
-    with _audio_map_lock:
-        cached = _audio_map_cache.get(path)
-    if cached is not None:
-        return cached
-
-    result = "0:a:0"
-    try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "a",
-             "-show_entries", "stream=index:stream_tags=language",
-             "-of", "json", path],
-            capture_output=True, text=True, timeout=15)
-        streams = json.loads(out.stdout or "{}").get("streams", [])
-        for i, s in enumerate(streams):
-            lang = ((s.get("tags") or {}).get("language") or "").lower()
-            if lang in ("eng", "en", "english"):
-                result = f"0:a:{i}"
-                break
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
-        log.warning("ffprobe audio map failed for %s: %s", path, exc)
-    with _audio_map_lock:
-        _audio_map_cache[path] = result
-    return result
+    return english_audio_map(path)
 
 
-def _ffmpeg_cmd(path: str, offset: float, duration: float, transcode: bool) -> list[str]:
+def _ffmpeg_cmd(path: str, offset: float, duration: float, transcode: bool,
+                subs: bool = False, tmpdir: str | None = None,
+                normalize_audio: bool = True) -> list[str]:
     # Input-seek (-ss before -i) is fast and frame-accurate enough for TV.
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin"]
+    pre, post = encode_chain(path, transcode, subs, tmpdir,
+                             normalize_audio=normalize_audio)
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", *pre]
     if offset > 1:
         cmd += ["-ss", f"{offset:.3f}"]
     cmd += ["-i", path]
     if duration > 0:
-        cmd += ["-t", f"{duration:.3f}"]
-    cmd += ["-map", "0:v:0", "-map", _english_audio_map(path) + "?", "-sn"]
-    if transcode:
-        cmd += [
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
-            "-profile:v", "main", "-pix_fmt", "yuv420p",
-            "-vf", "scale=-2:min(720\\,ih)", "-g", "48", "-sc_threshold", "0",
-            "-c:a", "aac", "-b:a", "128k", "-ac", "2",
-        ]
-    else:
-        # Copy video (assumes browser-friendly H.264); audio still -> aac.
-        cmd += ["-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ac", "2"]
+        # When subs are burned we use -copyts (so libass stays in sync), which
+        # makes -t measure against absolute timestamps -- use -to(end) instead.
+        cmd += ["-to", f"{offset + duration:.3f}"] if pre else ["-t", f"{duration:.3f}"]
+    cmd += post
     cmd += [
         "-movflags", "+frag_keyframe+empty_moov+default_base_moof",
         "-f", "mp4", "pipe:1",
@@ -161,16 +132,22 @@ def _ffmpeg_cmd(path: str, offset: float, duration: float, transcode: bool) -> l
 
 
 def _now_program(conn, slug: str):
-    """Return (channel, program, offset, remaining) for the live moment."""
+    """Return (channel, program, offset, remaining) for the live moment.
+
+    Advances past unplayable/missing files so the stream never starts ffmpeg
+    on a dead path.
+    """
     channel = next((c for c in repo.list_channels(conn) if c.slug == slug), None)
     if channel is None:
         return None, None, 0.0, 0.0
     now = time.time()
     prog = repo.program_at(conn, channel.id, now)
-    if prog is None:
+    if prog is not None and not prog.playable:
+        prog = repo.next_playable(conn, channel.id, prog.end_ts)
+    if prog is None or not prog.path or not os.path.isfile(prog.path):
         return channel, None, 0.0, 0.0
-    offset = max(0.0, now - prog.start_ts)
-    remaining = max(0.0, prog.end_ts - now)
+    offset = max(0.0, now - prog.start_ts) if prog.start_ts <= now else 0.0
+    remaining = max(0.0, prog.end_ts - now) if prog.end_ts > now else prog.duration_sec
     return channel, prog, offset, remaining
 
 
@@ -187,6 +164,7 @@ def _prog_dict(prog) -> dict | None:
         "start": prog.start_ts,
         "end": prog.end_ts,
         "duration": prog.duration_sec,
+        "playable": bool(getattr(prog, "playable", True)),
     }
 
 
@@ -215,7 +193,9 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
 
         # -- routing -------------------------------------------------------
         def do_GET(self):  # noqa: N802
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
+            subs = parse_qs(parsed.query).get("subs", ["0"])[0] == "1"
             try:
                 if path in ("/", "/index.html"):
                     return self._app()
@@ -225,6 +205,8 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                     return self._api_grid()
                 if path.startswith("/api/schedule/"):
                     return self._api_schedule(path[len("/api/schedule/"):])
+                if path.startswith("/api/program/"):
+                    return self._api_program(path[len("/api/program/"):])
                 if path.startswith("/logo/"):
                     return self._logo(path[len("/logo/"):])
                 parts = [p for p in path.split("/") if p]
@@ -235,9 +217,9 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                     if parts[2] == "now.json":
                         return self._now_json(slug)
                     if parts[2] == "live.mp4":
-                        return self._live(slug)
+                        return self._live(slug, subs)
                     if parts[2] == "index.m3u8":
-                        return self._hls_playlist(slug)
+                        return self._hls_playlist(slug, subs)
                     if _SEG_RE.match(parts[2]):
                         return self._hls_segment(slug, parts[2])
                 self._send(404, b"Not found", "text/plain")
@@ -327,6 +309,39 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                 "programs": items,
             })
 
+        def _api_program(self, raw_id: str):
+            """Title/episode details for the guide detail panel."""
+            try:
+                pid = int(raw_id.strip("/"))
+            except ValueError:
+                return self._send(404, b"Bad id", "text/plain")
+            conn = connect()
+            try:
+                prog = repo.get_program(conn, pid)
+                if prog is None or not prog.title_id:
+                    return self._send(404, b"Not found", "text/plain")
+                details = repo.get_title_details(
+                    conn, prog.title_id, prog.episode_id)
+            finally:
+                conn.close()
+            if details is None:
+                return self._send(404, b"Not found", "text/plain")
+            self._send_json({
+                "id": prog.id,
+                "title": prog.display_title,
+                "subtitle": prog.subtitle,
+                "blurb": prog.blurb or details.blurb,
+                "overview": details.episode_overview or details.overview,
+                "cast": details.cast,
+                "genres": details.genres,
+                "year": details.year,
+                "rating": details.rating,
+                "poster": details.poster_path,
+                "franchise": details.franchise,
+                "tags": details.tags,
+                "playable": prog.playable,
+            })
+
         def _now_json(self, slug: str):
             conn = connect()
             try:
@@ -343,8 +358,8 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                 }
             self._send_json(data)
 
-        def _hls_playlist(self, slug: str):
-            data = hls.playlist(slug)
+        def _hls_playlist(self, slug: str, subs: bool = False):
+            data = hls.playlist(slug, subs)
             if data is None:
                 self.send_response(503)
                 self.send_header("Content-Type", "text/plain")
@@ -372,7 +387,7 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                 return self._send(404, b"gone", "text/plain")
             self._send(200, data, "video/mp2t")
 
-        def _live(self, slug: str):
+        def _live(self, slug: str, subs: bool = False):
             conn = connect()
             try:
                 _, prog, offset, remaining = _now_program(conn, slug)
@@ -399,7 +414,12 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                     pass
                 return
 
-            cmd = _ffmpeg_cmd(prog.path, offset, remaining, cfg.stream.transcode)
+            # Subtitles are burned in, which needs a scratch dir (for a clean
+            # symlink so libass never has to escape the real path).
+            subdir = tempfile.mkdtemp(prefix="rg-sub-") if subs else None
+            cmd = _ffmpeg_cmd(prog.path, offset, remaining,
+                              cfg.stream.transcode, subs=subs, tmpdir=subdir,
+                              normalize_audio=cfg.stream.normalize_audio)
             # start_new_session => its own process group, so _kill_proc can take
             # down ffmpeg and any helper it spawned in one shot (no orphans).
             proc = subprocess.Popen(
@@ -442,6 +462,8 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                     pass
                 state.unregister(proc)
                 state.release()
+                if subdir:
+                    shutil.rmtree(subdir, ignore_errors=True)
                 log.info("stream end   client=%s ch=%s pid=%s sent=%.1fMB %.0fs rc=%s (%d active)",
                          client, slug, proc.pid, sent / 1e6,
                          time.monotonic() - t0, rc, state.active)

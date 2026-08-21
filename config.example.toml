@@ -8,7 +8,7 @@ movie_roots = ["/mnt/movies"]
 # File extensions treated as playable media.
 video_extensions = [".mkv", ".mp4", ".avi", ".m4v", ".mov", ".webm", ".ts", ".m2ts", ".wmv", ".mpg", ".mpeg"]
 # Substrings that mark a file/folder as junk and exclude it from the catalog.
-exclude_patterns = ["sample", "trailer", "$RECYCLE.BIN", ".parts", "featurette", "behind the scenes", "extras"]
+exclude_patterns = ["sample", "trailer", "$RECYCLE.BIN", ".parts", ".part", ".crdownload", "featurette", "behind the scenes", "extras"]
 # Skip files smaller than this (MB) -- usually samples/junk.
 min_file_mb = 50
 
@@ -54,6 +54,9 @@ default_view = "magazine"   # "magazine" or "grid"
 era = "90s"                 # "70s" | "80s" | "90s" | "00s"
 crt = true
 bw = false
+# Desktop chrome: "wide" (channels | player | guide), "compact" (stacked for
+# portrait / ultrawide-in-portrait), or "auto" (follow window aspect).
+layout = "auto"
 
 # Per-channel overrides. Key = channel slug (toonworld, prime, maxx, chuckle,
 # cinema, niteowl). Rename channels and/or give them a logo bug. Omit a slug
@@ -80,3 +83,6 @@ max_streams = 4
 # stream). Other browsers keep using the lower-latency MP4 path. One shared
 # ffmpeg per channel, capped by max_streams above.
 hls = true
+# Smooth out loudness jumps between programs/channels (dynaudnorm). Slight
+# extra CPU on each ffmpeg; turn off if you prefer raw rip levels.
+normalize_audio = true

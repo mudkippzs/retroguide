@@ -52,6 +52,42 @@ _HORROR = ("halloween", "haunted", "ghost", "witch", "vampire", "zombie",
            "slasher", "demon", "possessed", "nightmare", "evil dead")
 _ROMANCE_KW = ("valentine", "love story", "rom-com", "romantic")
 
+# Stand-up comedy specials. Matched by explicit phrasing or well-known
+# comedians so ordinary sitcoms/comedies don't get swept in.
+_STANDUP_KW = ("stand-up", "stand up comedy", "standup", "comedy special",
+               "live at the apollo", "live in concert", "one night stand")
+_STANDUP_NAMES = (
+    "chappelle", "joe rogan", "ricky gervais", "kevin hart", "bill burr",
+    "john mulaney", "chris rock", "jimmy carr", "louis c.k", "louis ck",
+    "daniel sloss", "bo burnham", "trevor noah", "hannah gadsby", "tom segura",
+    "bill hicks", "george carlin", "eddie izzard", "frankie boyle",
+    "stewart lee", "peter kay", "sarah silverman", "aziz ansari", "gabriel iglesias",
+)
+# Science & space factual. Gated on a documentary context so sci-fi *drama*
+# (Apollo 13, Interstellar, Guardians of the Galaxy) is never mistagged.
+_SCIENCE_KW = (
+    "cosmos", "universe", "solar system", "black hole", "galaxy", "nasa",
+    "apollo", "hubble", "telescope", "quantum", "physics", "astronaut",
+    "spacex", "outer space", "space station", "mars", "moon landing",
+    "big bang", "evolution", "dinosaur", "particle", "relativity",
+    "planet earth", "blue planet", "how the universe", "wonders of",
+    "science of", "astronomy", "astrophysics", "voyager probe",
+)
+
+# Titles that are unambiguously factual by name alone -- famous documentarians
+# and landmark science/nature strands. TMDB frequently files these under
+# "drama"/no genre, so we treat the name itself as the documentary context
+# (both to grant the science tag and to correct the bucket). Kept deliberately
+# specific so a sci-fi *drama* never trips it.
+_DOC_STRONG = (
+    "ken burns", "attenborough", "brian cox", "carl sagan", "neil degrasse",
+    "cosmos", "the planets", "planet earth", "blue planet", "frozen planet",
+    "our planet", "life on earth", "the universe", "how the universe works",
+    "wonders of the solar system", "wonders of life", "wonders of the universe",
+    "walking with dinosaurs", "a brief history of time", "the farthest",
+    "bbc horizon", "particle fever",
+)
+
 
 # Word-boundary matchers so "andor" doesn't match "Pandorum" and "thor"
 # doesn't match "Thornton".
@@ -83,7 +119,38 @@ def detect_tags(name: str, overview: str | None, genres: list[str]) -> list[str]
         tags.add("family")
     if "war" in g:
         tags.add("war")
+    if (any(n in text for n in _STANDUP_NAMES)
+            or any(k in text for k in _STANDUP_KW)
+            or "stand-up" in g or "stand up" in g):
+        tags.add("standup")
+    # Strong doc signals are matched against the *title only* -- a documentarian
+    # or strand name lives in the title, whereas an overview full of "universe"
+    # / "the farthest reaches of space" is just sci-fi drama flavour (e.g.
+    # Futurama) and must not be mistaken for a documentary.
+    name_low = (name or "").lower()
+    doc_strong = any(k in name_low for k in _DOC_STRONG)
+    doc_context = (doc_strong or "documentary" in g
+                   or "documentary" in name_low or "docuseries" in name_low)
+    if doc_context and any(k in text for k in _SCIENCE_KW):
+        tags.add("science")
     return sorted(tags)
+
+
+def is_doc_series(name: str, overview: str | None, genres: list[str]) -> bool:
+    """True when a *series* is clearly factual and belongs in the documentary
+    bucket. Used to correct LLM/heuristic mis-bucketing (docs often land in
+    'drama') so the science/factual strands can actually find them.
+
+    Deliberately conservative: only the genre and the *title* are trusted, never
+    the overview, so a sci-fi drama is never dragged into the documentary pool.
+    """
+    name_low = (name or "").lower()
+    g = {x.lower() for x in (genres or [])}
+    if "documentary" in g:
+        return True
+    if "documentary" in name_low or "docuseries" in name_low or "docu-series" in name_low:
+        return True
+    return any(k in name_low for k in _DOC_STRONG)
 
 
 def tag_title(name: str, overview: str | None, genres: list[str]) -> tuple[str | None, list[str]]:
@@ -93,7 +160,8 @@ def tag_title(name: str, overview: str | None, genres: list[str]) -> tuple[str |
 def backfill(conn: sqlite3.Connection,
              progress: Callable[[str, int, int], None] | None = None) -> int:
     """Compute franchise/tags for every title from data already on hand."""
-    rows = conn.execute("SELECT id, name, overview, genres FROM titles").fetchall()
+    rows = conn.execute(
+        "SELECT id, name, overview, genres, kind, bucket FROM titles").fetchall()
     total = len(rows)
     for i, r in enumerate(rows):
         try:
@@ -101,9 +169,16 @@ def backfill(conn: sqlite3.Connection,
         except (json.JSONDecodeError, TypeError):
             genres = []
         franchise, tags = tag_title(r["name"], r["overview"], genres)
+        # Correct clearly-factual series that were mis-bucketed (usually as
+        # 'drama'); the science/factual strands only pull the documentary
+        # bucket, so this is what actually lets them air there.
+        bucket = r["bucket"]
+        if (r["kind"] == "series" and bucket != "documentary"
+                and is_doc_series(r["name"], r["overview"], genres)):
+            bucket = "documentary"
         conn.execute(
-            "UPDATE titles SET franchise=?, tags=? WHERE id=?",
-            (franchise, json.dumps(tags), r["id"]),
+            "UPDATE titles SET franchise=?, tags=?, bucket=? WHERE id=?",
+            (franchise, json.dumps(tags), bucket, r["id"]),
         )
         if progress and i % 200 == 0:
             conn.commit()

@@ -1,18 +1,26 @@
-"""Enrich catalog titles with TMDB metadata and scheduling buckets."""
+"""Enrich catalog titles with TMDB/TVmaze metadata and scheduling buckets."""
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import time
 from collections.abc import Callable
 
+from rapidfuzz import fuzz
+
 from ..config import Config
-from ..util.naming import heuristic_bucket, sort_name as _sort
+from ..util.naming import heuristic_bucket, looks_like_anime, sort_name as _sort
 from .llm import LLM
 from .tmdb import TMDBClient
 from .tvmaze import TVMazeClient
 
+log = logging.getLogger("tvguide.enrich")
+
 ProgressCb = Callable[[str, int, int], None]
+
+# Minimum fuzzy score before we accept a provider match / rename.
+_MATCH_MIN = 72
 
 
 def _noop(msg: str, cur: int, total: int) -> None:  # pragma: no cover
@@ -25,14 +33,19 @@ class Enricher:
         self.cfg = cfg
         self.tmdb = TMDBClient(cfg.tmdb.api_key, cfg.tmdb.language)
         self.tvmaze = TVMazeClient()
-        # TMDB (if a key is set) covers films + TV; otherwise TVmaze handles TV
-        # for free and films lean on the local model.
         self.use_tmdb = self.tmdb.enabled
         self.llm = LLM(cfg.ollama.host, cfg.ollama.model, cfg.ollama.timeout)
 
     def run(self, progress: ProgressCb = _noop, limit: int | None = None,
-            kind: str = "all") -> int:
-        where = "WHERE enriched_at IS NULL"
+            kind: str = "all", force: bool = False) -> int:
+        # Pending + previous errors retry; successful enrichments stay done
+        # unless force=True (e.g. re-pull after enabling TMDB).
+        if force:
+            where = "WHERE 1=1"
+        else:
+            where = ("WHERE (enrich_state IS NULL OR enrich_state='' "
+                     "OR enrich_state='pending' OR enrich_state='error' "
+                     "OR enriched_at IS NULL)")
         if kind in ("series", "movie"):
             where += f" AND kind='{kind}'"
         q = f"SELECT * FROM titles {where} ORDER BY id" + (
@@ -40,42 +53,51 @@ class Enricher:
         rows = self.conn.execute(q).fetchall()
         total = len(rows)
         use_llm = self.llm.available()
+        done = 0
         for i, row in enumerate(rows):
             try:
                 if row["kind"] == "movie":
-                    self._enrich_movie(row, use_llm)
+                    ok = self._enrich_movie(row, use_llm)
                 else:
-                    self._enrich_series(row, use_llm)
+                    ok = self._enrich_series(row, use_llm)
+                if ok:
+                    self.conn.execute(
+                        "UPDATE titles SET enriched_at=?, enrich_state='done', "
+                        "enrich_error=NULL WHERE id=?",
+                        (time.time(), row["id"]),
+                    )
+                    done += 1
+                else:
+                    self.conn.execute(
+                        "UPDATE titles SET enrich_state='error', "
+                        "enrich_error=? WHERE id=?",
+                        ("no metadata", row["id"]),
+                    )
             except Exception as exc:  # keep going on individual failures
+                log.warning("enrich failed for %s: %s", row["name"], exc)
                 progress(f"err {row['name'][:30]}: {exc}", i + 1, total)
-            self.conn.execute(
-                "UPDATE titles SET enriched_at=? WHERE id=?", (time.time(), row["id"])
-            )
+                self.conn.execute(
+                    "UPDATE titles SET enrich_state='error', enrich_error=? WHERE id=?",
+                    (str(exc)[:200], row["id"]),
+                )
             if i % 10 == 0:
                 self.conn.commit()
                 progress(f"Enriching {row['name'][:42]}", i + 1, total)
         merged = self._merge_series_by_tmdb()
-        # Tag franchises / holidays so the special-event scheduler has data.
         from .tagging import backfill as _tag_backfill
         _tag_backfill(self.conn)
         self.conn.commit()
         progress(f"Enrichment complete ({merged} dupes merged)", total, total)
-        return total
+        return done
 
     def _merge_series_by_tmdb(self) -> int:
-        """Safely merge duplicate series after enrichment, by identical provider
-        id OR identical canonical name (e.g. 'Andor' and 'Star Wars Andor' both
-        resolve to TVmaze 'Andor'). Both signals are exact, so spin-offs like
-        'The Walking Dead: Dead City' are never touched."""
+        """Safely merge duplicate series after enrichment."""
         id_groups = self.conn.execute(
             "SELECT GROUP_CONCAT(id) ids FROM titles "
             "WHERE kind='series' AND tmdb_id IS NOT NULL GROUP BY tmdb_id HAVING COUNT(*)>1"
         ).fetchall()
         groups = [[int(x) for x in g["ids"].split(",")] for g in id_groups]
 
-        # Exact-name duplicates: merge only when the non-null years agree, so
-        # same-named remakes (1978 vs 2004) stay separate but Andor(2022)+
-        # Andor(NULL) fold together.
         by_name: dict[str, list[tuple[int, int | None]]] = {}
         for r in self.conn.execute(
             "SELECT id, LOWER(name) nm, year FROM titles WHERE kind='series'"
@@ -91,7 +113,6 @@ class Enricher:
         merged = 0
         for ids in groups:
             ids = sorted(set(ids))
-            # A title may have been deleted by an earlier group; re-check.
             ids = [i for i in ids if self.conn.execute(
                 "SELECT 1 FROM titles WHERE id=?", (i,)).fetchone()]
             if len(ids) < 2:
@@ -112,13 +133,11 @@ class Enricher:
                     else:
                         self.conn.execute(
                             "UPDATE episodes SET title_id=? WHERE id=?", (survivor, ep["id"]))
-                # Repoint any scheduled programs that referenced the dup title.
                 self.conn.execute(
                     "UPDATE programs SET title_id=? WHERE title_id=?", (survivor, dup))
                 self.conn.execute("DELETE FROM playheads WHERE title_id=?", (dup,))
                 self.conn.execute("DELETE FROM titles WHERE id=?", (dup,))
                 merged += 1
-            # Re-linearize the survivor's episodes.
             eps = self.conn.execute(
                 "SELECT id FROM episodes WHERE title_id=? ORDER BY season, episode",
                 (survivor,),
@@ -129,8 +148,21 @@ class Enricher:
         self.conn.commit()
         return merged
 
-    def _enrich_movie(self, row, use_llm: bool) -> None:
+    def _name_ok(self, local: str, remote: str | None) -> bool:
+        if not remote:
+            return False
+        score = fuzz.token_set_ratio(_sort(local), _sort(remote))
+        return score >= _MATCH_MIN
+
+    def _enrich_movie(self, row, use_llm: bool) -> bool:
+        """Return True when useful metadata was written."""
         meta = self.tmdb.movie(row["name"], row["year"]) if self.tmdb.enabled else None
+        if meta and not self._name_ok(row["name"], meta.name):
+            log.info("rejecting low-confidence TMDB movie match %r -> %r",
+                     row["name"], meta.name)
+            meta = None
+
+        wrote = False
         if meta:
             self.conn.execute(
                 "UPDATE titles SET tmdb_id=?, overview=?, genres=?, cast_json=?, "
@@ -140,10 +172,25 @@ class Enricher:
                  json.dumps(meta.cast), meta.rating, meta.poster_url,
                  meta.runtime, meta.name, meta.year, row["id"]),
             )
-        # bucket already 'film'
+            wrote = bool(meta.overview or meta.cast)
+        elif use_llm:
+            # Keyless fallback: local model invents a short synopsis + cast guess
+            # from the filename so the guide is never blank for films.
+            overview = self.llm.movie_overview(row["name"], row["year"])
+            if overview:
+                self.conn.execute(
+                    "UPDATE titles SET overview=?, bucket='film' WHERE id=?",
+                    (overview, row["id"]),
+                )
+                wrote = True
+            blurb = self.llm.movie_blurb(row["name"], row["year"], [], overview)
+            if blurb:
+                self.conn.execute(
+                    "UPDATE titles SET blurb=? WHERE id=?", (blurb, row["id"]))
+                wrote = True
+        return wrote
 
-    def _enrich_series(self, row, use_llm: bool) -> None:
-        # Prefer TMDB when a key exists, else use the free TVmaze provider.
+    def _enrich_series(self, row, use_llm: bool) -> bool:
         meta = None
         provider = None
         if self.use_tmdb:
@@ -152,19 +199,26 @@ class Enricher:
         if meta is None:
             meta = self.tvmaze.tv(row["name"], row["year"])
             provider = "tvmaze"
+        if meta and not self._name_ok(row["name"], meta.name):
+            log.info("rejecting low-confidence %s match %r -> %r",
+                     provider, row["name"], meta.name)
+            meta = None
+            provider = None
 
         genres: list[str] = []
+        origin = None
+        wrote = False
         if meta:
             genres = meta.genres
+            origin = getattr(meta, "origin", None)
             self.conn.execute(
-                "UPDATE titles SET tmdb_id=?, overview=?, genres=?, rating=?, "
-                "poster_path=?, year=COALESCE(year,?) WHERE id=?",
-                (meta.tmdb_id, meta.overview, json.dumps(meta.genres), meta.rating,
+                "UPDATE titles SET tmdb_id=?, overview=?, genres=?, cast_json=?, "
+                "rating=?, poster_path=?, year=COALESCE(year,?) WHERE id=?",
+                (meta.tmdb_id, meta.overview, json.dumps(meta.genres),
+                 json.dumps(meta.cast or []), meta.rating,
                  meta.poster_url, meta.year, row["id"]),
             )
-            # Rename to the canonical provider title, but tolerate the case
-            # where that name already exists (a duplicate) -- the TMDB-id merge
-            # below will fold them together afterwards.
+            wrote = True
             if meta.name:
                 try:
                     self.conn.execute(
@@ -173,48 +227,57 @@ class Enricher:
                 except sqlite3.IntegrityError:
                     pass
 
-        bucket = heuristic_bucket(row["name"], "series", genres)
-        if use_llm and (bucket in ("drama", "other") and not genres):
-            llm_bucket = self.llm.classify(row["name"], meta.overview if meta else None, genres)
+        canon = (meta.name if meta and meta.name else row["name"])
+        bucket = heuristic_bucket(canon, "series", genres, origin=origin)
+        if looks_like_anime(canon, genres=genres, origin=origin):
+            bucket = "anime"
+        # Re-classify ambiguous animation via LLM when genres are thin.
+        if use_llm and (bucket in ("drama", "other", "kids_cartoon")
+                        and (not genres or "animation" in {g.lower() for g in genres})):
+            llm_bucket = self.llm.classify(canon, meta.overview if meta else None, genres)
             if llm_bucket:
                 bucket = llm_bucket
         self.conn.execute("UPDATE titles SET bucket=? WHERE id=?", (bucket, row["id"]))
+        self._enrich_episodes(row["id"], canon, row["year"], meta, provider)
+        return wrote or bool(bucket)
 
-        # Pull episode names/overviews from the chosen provider.
-        if meta and meta.tmdb_id:
-            if provider == "tvmaze":
-                ep_map = self.tvmaze.tv_season_all(meta.tmdb_id)
-                for (season, ep_num), info in ep_map.items():
-                    self.conn.execute(
-                        "UPDATE episodes SET name=COALESCE(?, name), "
-                        "overview=COALESCE(?, overview) WHERE title_id=? AND "
-                        "season=? AND episode=?",
-                        (info["name"], info["overview"], row["id"], season, ep_num),
-                    )
-            else:
-                seasons = [r["season"] for r in self.conn.execute(
-                    "SELECT DISTINCT season FROM episodes WHERE title_id=? ORDER BY season",
-                    (row["id"],),
-                )]
-                for season in seasons:
-                    ep_map = self.tmdb.tv_season(meta.tmdb_id, season)
-                    for ep_num, info in ep_map.items():
-                        self.conn.execute(
-                            "UPDATE episodes SET name=COALESCE(?, name), "
-                            "overview=COALESCE(?, overview) WHERE title_id=? AND "
-                            "season=? AND episode=?",
-                            (info["name"], info["overview"], row["id"], season, ep_num),
-                        )
+    def _enrich_episodes(self, title_id: int, name: str, year: int | None,
+                         meta, provider: str | None) -> None:
+        """Fill episode names/overviews. Prefer TVmaze's full episode list."""
+        ep_map: dict[tuple[int, int], dict] = {}
+        if provider == "tvmaze" and meta and meta.tmdb_id:
+            ep_map = self.tvmaze.tv_season_all(meta.tmdb_id)
+        else:
+            # Show meta may be from TMDB; still prefer TVmaze for per-episode copy.
+            maze = self.tvmaze.tv(name, year)
+            if maze and maze.tmdb_id and self._name_ok(name, maze.name):
+                ep_map = self.tvmaze.tv_season_all(maze.tmdb_id)
+            elif meta and meta.tmdb_id and provider == "tmdb":
+                for season in self.conn.execute(
+                    "SELECT DISTINCT season FROM episodes WHERE title_id=? "
+                    "ORDER BY season",
+                    (title_id,),
+                ):
+                    for ep_num, info in self.tmdb.tv_season(
+                            meta.tmdb_id, season["season"]).items():
+                        ep_map[(season["season"], ep_num)] = info
 
-    # -- program blurbs: retro-voice teasers for everything on the grid ----
+        for (season, ep_num), info in ep_map.items():
+            self.conn.execute(
+                "UPDATE episodes SET name=COALESCE(?, name), "
+                "overview=COALESCE(?, overview), enriched_at=? "
+                "WHERE title_id=? AND season=? AND episode=?",
+                (info.get("name"), info.get("overview"), time.time(),
+                 title_id, season, ep_num),
+            )
+
+    # -- program blurbs ----------------------------------------------------
     def write_program_blurbs(self, progress: ProgressCb = _noop) -> int:
-        """Generate spoiler-free retro blurbs for each unique program, dedup by
-        episode/movie, and cache them back so future weeks reuse them."""
-        if not self.llm.available():
-            progress("LLM unavailable", 0, 0)
-            return 0
+        """Generate spoiler-free retro blurbs; fall back to overview+cast offline."""
+        use_llm = self.llm.available()
+        if not use_llm:
+            progress("LLM unavailable — writing fallback blurbs", 0, 0)
 
-        # Unique episodes appearing in the schedule that still lack a blurb.
         eps = self.conn.execute(
             "SELECT DISTINCT e.id, e.name, e.overview, t.name AS show, t.overview AS sov "
             "FROM programs p JOIN episodes e ON e.id=p.episode_id "
@@ -231,7 +294,10 @@ class Enricher:
         done = 0
         for ep in eps:
             ov = ep["overview"] or ep["sov"]
-            blurb = self.llm.episode_blurb(ep["show"], ep["name"], ov) or _fallback_blurb(ov, None)
+            blurb = None
+            if use_llm:
+                blurb = self.llm.episode_blurb(ep["show"], ep["name"], ov)
+            blurb = blurb or _fallback_blurb(ov, None)
             if blurb:
                 self.conn.execute("UPDATE episodes SET blurb=? WHERE id=?", (blurb, ep["id"]))
                 self.conn.execute(
@@ -242,8 +308,10 @@ class Enricher:
                 progress(f"Blurb: {ep['show'][:36]}", done, total)
         for mv in movies:
             cast = json.loads(mv["cast_json"] or "[]")
-            blurb = self.llm.movie_blurb(mv["name"], mv["year"], cast, mv["overview"]) \
-                or _fallback_blurb(mv["overview"], mv["cast_json"])
+            blurb = None
+            if use_llm:
+                blurb = self.llm.movie_blurb(mv["name"], mv["year"], cast, mv["overview"])
+            blurb = blurb or _fallback_blurb(mv["overview"], mv["cast_json"])
             if blurb:
                 self.conn.execute("UPDATE titles SET blurb=? WHERE id=?", (blurb, mv["id"]))
                 self.conn.execute(
@@ -257,7 +325,6 @@ class Enricher:
         progress("Blurbs complete", total, total)
         return total
 
-    # -- blurbs (used by scheduler, lazily, only for aired programs) --------
     def blurb_for_movie(self, title_row) -> str | None:
         if not self.llm.available():
             return _fallback_blurb(title_row["overview"], title_row["cast_json"])
@@ -275,19 +342,22 @@ class Enricher:
 
 
 def _fallback_blurb(overview: str | None, cast_json: str | None) -> str | None:
-    if not overview:
+    if not overview and not cast_json:
         return None
-    text = overview.strip()
-    # Trim to ~2 sentences.
-    parts = text.split(". ")
-    teaser = ". ".join(parts[:2]).strip()
-    if not teaser.endswith("."):
-        teaser += "."
+    teaser = ""
+    if overview:
+        text = overview.strip()
+        parts = text.split(". ")
+        teaser = ". ".join(parts[:2]).strip()
+        if teaser and not teaser.endswith("."):
+            teaser += "."
     if cast_json:
         try:
             cast = json.loads(cast_json)
             if cast:
-                return f"Starring {', '.join(cast[:3])}. {teaser}"
+                if teaser:
+                    return f"Starring {', '.join(cast[:3])}. {teaser}"
+                return f"Starring {', '.join(cast[:3])}."
         except json.JSONDecodeError:
             pass
-    return teaser
+    return teaser or None

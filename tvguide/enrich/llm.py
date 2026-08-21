@@ -71,6 +71,16 @@ class LLM:
         out = re.split(r"[^a-z_]", out.strip().lower())[0]
         return out if out in BUCKETS else None
 
+    def movie_overview(self, title: str, year) -> str | None:
+        """Short plot synopsis when no metadata provider is available."""
+        prompt = (
+            f"Film: {title}" + (f" ({year})" if year else "") + "\n\n"
+            "Write a 2-sentence spoiler-free plot synopsis for a TV guide. "
+            "If you are unsure of the film, write a cautious generic teaser "
+            "from the title alone. Output ONLY the synopsis."
+        )
+        return self._chat(_BLURB_SYSTEM, prompt, num_predict=100)
+
     # -- blurbs -------------------------------------------------------------
     def movie_blurb(self, title: str, year, cast: list[str], overview: str | None) -> str | None:
         prompt = (
