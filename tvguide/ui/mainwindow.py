@@ -124,6 +124,8 @@ class MainWindow(QWidget):
         self._binge_mode = False
         self._binge_queue: list = []
         self._binge_idx = -1
+        self._binge_played: set[int] = set()
+        self._binge_history: list[int] = []
 
         # Body host is re-laid-out between wide (side-by-side) and compact
         # (stacked) without destroying the child widgets.
@@ -515,15 +517,15 @@ class MainWindow(QWidget):
         for w in (self.view_mag_btn, self.view_grid_btn, self.surprise_btn):
             w.setVisible(not binge)
         self.player.live_btn.setVisible(not binge)
+        self._binge_queue = []
+        self._binge_idx = -1
+        self._binge_played = set()
+        self._binge_history = []
         if binge:
             self.library.reload()
-            self._binge_queue = []
-            self._binge_idx = -1
             self.player.set_now_playing("BINGE", "Build a queue and press ▶ Play", "")
             self.player.set_next("")
         else:
-            self._binge_queue = []
-            self._binge_idx = -1
             self.go_live()
         self._apply_layout(force=True)
 
@@ -537,29 +539,57 @@ class MainWindow(QWidget):
             self.player.show_error("Queue is empty — add something from the library")
             return
         self._binge_queue = queue
-        self._play_binge(0)
+        self._binge_played = set()
+        self._binge_history = []
+        self._binge_idx = -1
+        self._binge_advance(1)
 
     def _play_binge(self, idx: int) -> None:
         if not self._binge_queue:
             return
         idx = max(0, min(len(self._binge_queue) - 1, idx))
+        if self._binge_idx >= 0 and self._binge_idx != idx:
+            self._binge_history.append(self._binge_idx)
         self._binge_idx = idx
+        self._binge_played.add(idx)
         qi = self._binge_queue[idx]
         self.current_program = None
         self.player.static_wipe()
         self.player.video.play(qi.path, 0.0)
         self.player.set_now_playing("BINGE", qi.display_title, qi.subtitle)
-        nxt = (self._binge_queue[idx + 1].display_title
-               if idx + 1 < len(self._binge_queue) else "")
+        nxt_idx = self._binge_peek_next()
+        nxt = (self._binge_queue[nxt_idx].display_title
+               if nxt_idx is not None else "")
         self.player.set_next(nxt)
         self.player.flash_osd(f"QUEUE {idx + 1}/{len(self._binge_queue)}")
 
+    def _binge_peek_next(self) -> int | None:
+        """What advance(1) would play, without mutating state."""
+        from ..binge import playlist
+        return playlist.next_index(
+            set(self._binge_played), len(self._binge_queue),
+            randomize=self.library.random_btn.isChecked(),
+            repeat=self.library.repeat_btn.isChecked())
+
     def _binge_advance(self, delta: int) -> None:
-        nxt = self._binge_idx + delta
-        if 0 <= nxt < len(self._binge_queue):
-            self._play_binge(nxt)
-        elif delta > 0:
+        from ..binge import playlist
+        if not self._binge_queue:
+            return
+        if delta < 0:
+            # Back through what actually played (random-aware), else linear.
+            if self._binge_history:
+                self._play_binge(self._binge_history.pop())
+            elif self._binge_idx > 0:
+                self._play_binge(self._binge_idx - 1)
+            return
+        nxt = playlist.next_index(
+            self._binge_played, len(self._binge_queue),
+            randomize=self.library.random_btn.isChecked(),
+            repeat=self.library.repeat_btn.isChecked())
+        if nxt is None:
             self.player.flash_osd("Queue finished", ms=3000)
+        else:
+            self._play_binge(nxt)
 
     def _toggle_compact(self) -> None:
         # Explicit preference (leaves "auto" behind so the choice sticks).

@@ -147,3 +147,39 @@ def test_save_load_roundtrip(tmp_db, media_root):
 def test_save_rejects_queue_name(tmp_db):
     with pytest.raises(ValueError):
         playlist.save_as(tmp_db, playlist.QUEUE_NAME)
+
+
+def test_next_index_sequential():
+    played = {0, 1}
+    assert playlist.next_index(played, 5, randomize=False, repeat=False) == 2
+
+
+def test_next_index_finished_without_repeat():
+    assert playlist.next_index({0, 1}, 2, randomize=False,
+                               repeat=False) is None
+
+
+def test_next_index_repeat_restarts_cycle():
+    played = {0, 1}
+    assert playlist.next_index(played, 2, randomize=False, repeat=True) == 0
+    assert played == set()  # cycle reset for the next round
+
+
+def test_next_index_random_picks_unplayed():
+    import random
+    played = {0, 1, 3}
+    rng = random.Random(42)
+    for _ in range(10):
+        assert playlist.next_index(set(played), 5, randomize=True,
+                                   repeat=False, rng=rng) in (2, 4)
+
+
+def test_next_index_random_with_repeat_exhausts_then_resets():
+    played = {0, 1, 2}
+    nxt = playlist.next_index(played, 3, randomize=True, repeat=True)
+    assert nxt in (0, 1, 2)
+    assert played == set()
+
+
+def test_next_index_empty_queue():
+    assert playlist.next_index(set(), 0, randomize=True, repeat=True) is None

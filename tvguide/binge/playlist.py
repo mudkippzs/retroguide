@@ -278,6 +278,28 @@ def theme_random(conn: sqlite3.Connection, *, tag: str | None = None,
     return added
 
 
+def next_index(played: set[int], length: int, *, randomize: bool,
+               repeat: bool, rng: random.Random | None = None) -> int | None:
+    """Index to play after the current one, given the toggles.
+
+    Sequential mode plays the first not-yet-played index (normally
+    current+1); random mode draws from unplayed indices. When everything
+    has played, repeat restarts the cycle (clearing ``played``), otherwise
+    the queue is finished (None).
+    """
+    if length <= 0:
+        return None
+    remaining = [i for i in range(length) if i not in played]
+    if not remaining:
+        if not repeat:
+            return None
+        played.clear()
+        remaining = list(range(length))
+    if randomize:
+        return (rng or random).choice(remaining)
+    return remaining[0]
+
+
 # ----------------------------------------------------------------------
 # Named playlists
 # ----------------------------------------------------------------------

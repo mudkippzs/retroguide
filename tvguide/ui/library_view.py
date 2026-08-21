@@ -175,6 +175,16 @@ class LibraryPanel(QFrame):
             "letter-spacing:1px;")
         head.addWidget(self.queue_head)
         head.addStretch()
+        self.repeat_btn = QPushButton("🔁")
+        self.repeat_btn.setCheckable(True)
+        self.repeat_btn.setToolTip("Repeat — when the queue finishes, "
+                                   "start it again")
+        self.random_btn = QPushButton("⚄")
+        self.random_btn.setCheckable(True)
+        self.random_btn.setToolTip("Random order — jump to a random "
+                                   "unplayed item instead of the next one")
+        head.addWidget(self.repeat_btn)
+        head.addWidget(self.random_btn)
         self.play_btn = QPushButton("▶ Play")
         self.play_btn.setObjectName("accent")
         self.play_btn.setToolTip("Play the queue from the top in the player")
