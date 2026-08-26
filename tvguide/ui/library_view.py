@@ -175,11 +175,11 @@ class LibraryPanel(QFrame):
             "letter-spacing:1px;")
         head.addWidget(self.queue_head)
         head.addStretch()
-        self.repeat_btn = QPushButton("🔁")
+        self.repeat_btn = QPushButton("↻")
         self.repeat_btn.setCheckable(True)
         self.repeat_btn.setToolTip("Repeat — when the queue finishes, "
                                    "start it again")
-        self.random_btn = QPushButton("⚄")
+        self.random_btn = QPushButton("🎲")
         self.random_btn.setCheckable(True)
         self.random_btn.setToolTip("Random order — jump to a random "
                                    "unplayed item instead of the next one")
@@ -209,7 +209,7 @@ class LibraryPanel(QFrame):
             ("✕", "Remove from queue", self._remove),
             ("\U0001f500", "Shuffle the queue (series/season blocks stay in "
              "episode order)", self._shuffle),
-            ("\U0001f3b2", "Theme random — add random picks by tag/bucket",
+            ("✨", "Theme random — add random picks by tag/bucket",
              self._theme_random),
         ):
             b = QPushButton(text)

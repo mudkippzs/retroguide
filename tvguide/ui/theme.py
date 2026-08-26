@@ -140,6 +140,16 @@ QComboBox QAbstractItemView {{
 }}
 QToolTip {{ background: {PANEL_HI}; color: {TEXT}; border: 1px solid {ACCENT_DIM}; }}
 
+/* Popup menus (audio/subtitle pickers, context menus) */
+QMenu {{
+    background: {PANEL_HI}; color: {TEXT};
+    border: 1px solid {BORDER}; border-radius: 8px; padding: 4px;
+}}
+QMenu::item {{ padding: 6px 18px; border-radius: 5px; }}
+QMenu::item:selected {{ background: {ACCENT_DIM}; color: {TEXT}; }}
+QMenu::item:disabled {{ color: {MUTED}; }}
+QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
+
 /* Dialogs & text inputs */
 QDialog {{
     background: qlineargradient(x1:0, y1:0, x2:0, y2:1,

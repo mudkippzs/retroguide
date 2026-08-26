@@ -77,11 +77,24 @@ class MagazineView(QScrollArea):
 
     def refresh_now(self, now_ts: float) -> ProgramRow | None:
         current = None
+        previous = getattr(self, "_last_now_row", None)
         for row in self._rows:
             is_now = row.program.start_ts <= now_ts < row.program.end_ts
             row.set_now(is_now)
             if is_now:
                 current = row
+        # Follow time: a new program started while the old ON-AIR row was
+        # on screen — scroll it into view. If the user scrolled away, stay.
+        if current is not None and previous is not None and current is not previous:
+            try:
+                vp = self.viewport().rect()
+                prev_pos = self.widget().mapTo(
+                    self.viewport(), previous.geometry().topLeft())
+                if vp.contains(prev_pos):
+                    self.scroll_to(current)
+            except RuntimeError:
+                pass  # previous row was deleted by a repopulate
+        self._last_now_row = current
         return current
 
     def scroll_to(self, row: ProgramRow) -> None:
@@ -235,11 +248,23 @@ class GridView(QGraphicsView):
         self._now_line.setZValue(10)
 
     def update_now(self, now_ts: float) -> None:
-        """Advance the now-line and ON-AIR highlight without a full rebuild."""
-        self._now_ts = now_ts
+        """Advance the now-line and ON-AIR highlight without a full rebuild.
+
+        Follows time: when the now-line was visible and drifts past ~85% of
+        the viewport width, re-center on it. If the user scrolled away
+        manually (now-line not visible), the view stays put until they
+        scroll back to it.
+        """
         if self._now_line is not None and self._origin_ts:
+            old_nx = self.LABEL_W + (self._now_ts - self._origin_ts) / 60 * self.PX_PER_MIN
             nx = self.LABEL_W + (now_ts - self._origin_ts) / 60 * self.PX_PER_MIN
+            vp = self.mapToScene(self.viewport().rect()).boundingRect()
+            was_visible = vp.left() <= old_nx <= vp.right()
             self._now_line.setLine(nx, 0, nx, self._scene_height)
+            if was_visible and nx > vp.left() + vp.width() * 0.85:
+                self._now_ts = now_ts
+                self.scroll_to_now()
+        self._now_ts = now_ts
         for item in self._items:
             item.set_now(item.program.start_ts <= now_ts < item.program.end_ts)
 
