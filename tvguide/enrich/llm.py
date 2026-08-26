@@ -88,7 +88,8 @@ class LLM:
             f"Starring: {', '.join(cast) or 'unknown'}\n"
             f"Plot: {(overview or 'unknown')[:500]}\n\n"
             "Write a 2-sentence TV-guide blurb. Lead with the star names, then a "
-            "tantalising, spoiler-free plot teaser."
+            "tantalising, spoiler-free plot teaser. Use ONLY the cast and plot "
+            "given above; never invent actors, characters, or plot details."
         )
         return self._chat(_BLURB_SYSTEM, prompt, num_predict=120)
 
@@ -97,6 +98,7 @@ class LLM:
             f"Series: {show}\n"
             f"Episode: {ep_name or 'unknown'}\n"
             f"Synopsis: {(overview or 'unknown')[:500]}\n\n"
-            "Write a 2-3 sentence spoiler-free teaser for tonight's episode."
+            "Write a 2-3 sentence spoiler-free teaser for tonight's episode. "
+            "Use ONLY the synopsis given above; never invent plot details."
         )
         return self._chat(_BLURB_SYSTEM, prompt, num_predict=130)

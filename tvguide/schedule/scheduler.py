@@ -856,7 +856,9 @@ class Scheduler:
         subtitle = f"S{season:02d}E{episode:02d}"
         if ep["name"]:
             subtitle += f" - {ep['name']}"
-        blurb = ep["blurb"] or _trim(ep["overview"]) or _trim(series["overview"])
+        # Real provider synopsis first; the LLM teaser is only a fallback —
+        # local models improvise cast/plot when context is thin.
+        blurb = _trim(ep["overview"]) or ep["blurb"] or _trim(series["overview"])
         cast = _row_cast(series)
         if cast and blurb and "starring" not in blurb.lower():
             # Keep episode blurbs plot-first; cast is shown in the details panel.
@@ -878,7 +880,7 @@ class Scheduler:
         if cast:
             starring = ", ".join(cast[:3])
             subtitle = (subtitle + "  " if subtitle else "") + f"Starring {starring}"
-        blurb = film["blurb"] or _fallback_film_blurb(film["overview"], cast)
+        blurb = _fallback_film_blurb(film["overview"], cast) or film["blurb"]
         start_ts = cursor.timestamp()
         self.conn.execute(
             "INSERT INTO programs(channel_id,start_ts,end_ts,duration_sec,daypart,"
