@@ -60,12 +60,15 @@ class TMDBClient:
         TMDB's first result can be a same-named remake/revival (e.g. the
         2026 "Scrubs" outranks the 2001 original on recency). Prefer the
         closest name match; break ties by popularity so the well-known
-        original wins over a same-named newcomer.
+        original wins over a same-named newcomer. Uses plain ratio, not
+        token_set_ratio: a subset title ("Dungeons and Dragons") must not
+        score 100 against a longer unrelated hit ("Aunty Donna's Dungeons
+        and Dragons").
         """
         from rapidfuzz import fuzz
 
         def score(r: dict) -> tuple:
-            sim = fuzz.token_set_ratio(
+            sim = fuzz.ratio(
                 (name or "").lower(), (r.get(name_key) or "").lower())
             return (sim, r.get("popularity") or 0.0, r.get("vote_count") or 0)
         return max(results, key=score)

@@ -41,7 +41,7 @@ _SEASON_EPISODE_WORD = re.compile(
     r"\bseason\s*(\d{1,2})\b[\s._,&-]*\bepisode\s*(\d{1,3})\b", re.I)
 # Episode word with no season ("... Episode 05 - Title"); season comes from
 # the folder instead.
-_EPISODE_WORD_ONLY = re.compile(r"\bepisode\s*(\d{1,3})\b", re.I)
+_EPISODE_WORD_ONLY = re.compile(r"\b(?:episode|ep)\b[\s.]*(\d{1,3})", re.I)
 # A folder that names exactly one season ("Season 2", "S02", "Series 3").
 _FOLDER_SEASON = re.compile(
     r"^\s*(?:season|series|staffel|saison)\s*(\d{1,2})\s*$|"
@@ -149,7 +149,8 @@ def has_episode_marker(text: str) -> bool:
 # titles ("Babylon 5", "3rd Rock") survive.
 _TRAILING_SEASON_RUN = re.compile(r"\s+\d{1,2}(\s+\d{1,2}){1,}\s*$")
 _TRAILING_SEASON_WORD = re.compile(
-    r"\s+(seasons?|series|complete|collection)\s*\d*(\s*[-\u2013]\s*\d+)?\s*$", re.I)
+    r"\s+(seasons?|series|complete|collection|box\s?set)\s*\d*"
+    r"(\s*[-\u2013]\s*\d+)?\s*$", re.I)
 
 
 def series_title_from_name(name: str) -> str:
@@ -167,6 +168,10 @@ def series_title_from_name(name: str) -> str:
         if not has_episode_marker(str(alt)):
             title = f"{title} {alt}"
     title = clean_title(title)
+    # "BoxSet" can sit mid-name once release-group junk is stripped
+    # ("Father Ted BoxSet [1995–1998] (GROUP)"), so drop the token anywhere.
+    title = re.sub(r"\bbox\s?set\b", " ", title, flags=re.I)
+    title = re.sub(r"\s{2,}", " ", title).strip()
     title = _TRAILING_SEASON_WORD.sub("", title)
     title = _TRAILING_SEASON_RUN.sub("", title)
     return title.strip(" -[]") or clean_title(name)
@@ -219,14 +224,16 @@ def parse_media(path: Path, expected_type: str | None = None) -> ParsedMedia:
         if wm:
             season = int(wm.group(1))
             episode = int(wm.group(2))
-        elif _EPISODE_WORD_ONLY.search(fn) and episode is not None:
-            # Filename names an episode but no season; guessit's season may
-            # have leaked from a box-set folder, so prefer the nearest
+        elif expected_type != "movie" and _EPISODE_WORD_ONLY.search(path.name):
+            # "Episode 05" / "(Ep. 02)" in the filename (parens included, as
+            # the crossover-guard above strips them) beats whatever guessit
+            # picked up from the path. Season comes from the nearest
             # single-season parent folder when there is one.
+            em = _EPISODE_WORD_ONLY.search(path.name)
+            episode = int(em.group(1))
             hint = folder_season_hint(path)
-            if hint is not None:
-                season = hint
-        elif expected_type != "movie" and episode is None:
+            season = hint if hint is not None else (season or 1)
+        if expected_type != "movie" and episode is None:
             # Bare leading number ("01 Night of the Lizard.mkv"): the number
             # is the episode. Without an explicit episode hint we also
             # require a single-season parent folder so stray numbers on a TV

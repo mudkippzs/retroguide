@@ -76,6 +76,12 @@ layout = "auto"
 [bucket_overrides]
 # "3rd Rock from the Sun" = "sitcom"
 
+# Folder-derived series name -> canonical title, for cryptic release folders
+# the providers can't match. Applied at index time so the folder merges into
+# the canonical title (and survives reindexes).
+[title_aliases]
+# "SUPERMAN T A S" = "Superman: The Animated Series"
+
 [stream]
 # LAN broadcast: hit "Stream" in the app (or run `retroguide serve`) to watch
 # the live channels from any browser on your network -- you join whatever is

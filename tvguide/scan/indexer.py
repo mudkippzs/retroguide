@@ -86,6 +86,7 @@ class Indexer:
 
     # -- title resolution ---------------------------------------------------
     def _find_or_create_series(self, name: str, year: int | None) -> int:
+        name = (self.cfg.title_aliases or {}).get(name, name)
         key = sort_name(name)
         if key in self._series_cache:
             return self._series_cache[key]

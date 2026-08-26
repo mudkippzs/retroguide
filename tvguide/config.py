@@ -108,6 +108,10 @@ class Config:
     # Title-name -> scheduling bucket fixes for mis-classified shows
     # (e.g. "Father Ted BoxSet" = "sitcom"). Applied after scan/reindex/enrich.
     bucket_overrides: dict[str, str] = field(default_factory=dict)
+    # Folder-derived series name -> canonical title (e.g. a cryptic release
+    # folder like "SUPERMAN T A S" = "Superman: The Animated Series").
+    # Applied at index time so aliased folders merge into one title.
+    title_aliases: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "Config":
@@ -126,6 +130,7 @@ class Config:
             channel_names=dict(data.get("channels", {})),
             channel_logos=dict(data.get("channel_logos", {})),
             bucket_overrides=dict(data.get("bucket_overrides", {})),
+            title_aliases=dict(data.get("title_aliases", {})),
         )
 
     def save(self, path: Path | None = None) -> Path:
@@ -141,6 +146,7 @@ class Config:
             "channels": dict(self.channel_names),
             "channel_logos": dict(self.channel_logos),
             "bucket_overrides": dict(self.bucket_overrides),
+            "title_aliases": dict(self.title_aliases),
         }
         lines: list[str] = []
         for name, values in sections.items():

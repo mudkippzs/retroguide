@@ -289,6 +289,22 @@ class Enricher:
                             meta.tmdb_id, season["season"]).items():
                         ep_map[(season["season"], ep_num)] = info
 
+        # TVmaze often has episode names but no summaries for older shows;
+        # top up missing overviews from TMDB's season data when we can.
+        # NB: meta.tmdb_id is a *TVmaze* id when provider == "tvmaze"; the
+        # titles table always stores the TMDB id, so read it from there.
+        row = self.conn.execute(
+            "SELECT tmdb_id FROM titles WHERE id=?", (title_id,)).fetchone()
+        tmdb_id = row["tmdb_id"] if row else None
+        if tmdb_id and any(not i.get("overview") for i in ep_map.values()):
+            for season in {s for s, _ in ep_map}:
+                for ep_num, info in self.tmdb.tv_season(tmdb_id, season).items():
+                    cur = ep_map.get((season, ep_num))
+                    if cur is None:
+                        ep_map[(season, ep_num)] = info
+                    elif not cur.get("overview") and info.get("overview"):
+                        cur["overview"] = info["overview"]
+
         for (season, ep_num), info in ep_map.items():
             self.conn.execute(
                 "UPDATE episodes SET name=COALESCE(?, name), "

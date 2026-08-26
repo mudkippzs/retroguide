@@ -146,11 +146,11 @@ def test_reindex_preserves_episode_overviews(tmp_db, media_root, cfg):
 
 def test_bucket_overrides_applied_on_scan(tmp_db, media_root, cfg):
     _scan_cfg(cfg, media_root)
-    cfg.bucket_overrides = {"Father Ted BoxSet": "sitcom"}
+    cfg.bucket_overrides = {"Father Ted": "sitcom"}
     _mk(media_root / "Father Ted BoxSet" / "Father Ted BoxSet S01E01 x.mp4")
     Indexer(tmp_db, cfg).scan()
     row = tmp_db.execute(
-        "SELECT bucket FROM titles WHERE name='Father Ted BoxSet'").fetchone()
+        "SELECT bucket FROM titles WHERE name='Father Ted'").fetchone()
     assert row["bucket"] == "sitcom"
 
 
@@ -173,3 +173,29 @@ def test_kids_channel_never_pads_with_horror(tmp_db, media_root, cfg):
     assert aired, "expected pad films on toonworld"
     assert "Gorefest" not in aired
     assert "War Film" not in aired
+
+
+def test_boxset_folder_folds_into_base_title(tmp_db, media_root, cfg):
+    """'Father.Ted.BoxSet.[...]DVDRip...' folder must yield 'Father Ted'."""
+    from tvguide.util.naming import series_title_from_name
+    assert series_title_from_name(
+        "Father.Ted.BoxSet.[1995-1998]DVDRip.H264(GROUP)") == "Father Ted"
+
+
+def test_parenthesized_ep_marker(tmp_db, media_root, cfg):
+    """'Show (Ep. 02) Title.mkv' parses as episode 2 despite the parens."""
+    from tvguide.util.naming import parse_media
+    p = media_root / "Dungeons and Dragons" / \
+        "Dungeons & Dragons (Ep. 02) Eye of the Beholder.mkv"
+    parsed = parse_media(p, "episode")
+    assert parsed.episode == 2
+
+
+def test_title_aliases_merge_series(tmp_db, media_root, cfg):
+    _scan_cfg(cfg, media_root)
+    cfg.title_aliases = {"SUPERMAN T A S": "Superman: The Animated Series"}
+    _mk(media_root / "SUPERMAN T.A.S." / "Season 1" / "SUPERMAN TAS S01E01.mkv")
+    Indexer(tmp_db, cfg).scan()
+    row = tmp_db.execute(
+        "SELECT name FROM titles WHERE kind='series'").fetchone()
+    assert row["name"] == "Superman: The Animated Series"
