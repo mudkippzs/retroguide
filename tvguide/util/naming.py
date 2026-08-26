@@ -96,7 +96,6 @@ _CONTENT_SIGNAL = re.compile(
 
 
 def is_excluded(path: Path, patterns: list[str]) -> bool:
-    name = path.name.lower()
     # Hidden / partial download files (.part, .crdownload, .!qB, …).
     if is_partial_path(path):
         return True
@@ -227,6 +226,18 @@ def parse_media(path: Path, expected_type: str | None = None) -> ParsedMedia:
             hint = folder_season_hint(path)
             if hint is not None:
                 season = hint
+        elif expected_type != "movie" and episode is None:
+            # Bare leading number ("01 Night of the Lizard.mkv"): the number
+            # is the episode. Without an explicit episode hint we also
+            # require a single-season parent folder so stray numbers on a TV
+            # drive don't invent episodes. The separator after the digits
+            # keeps codec prefixes like "360p" from matching.
+            bm = re.match(r"^0*(\d{1,3})[\s._\-]+", path.stem)
+            if bm:
+                hint = folder_season_hint(path)
+                if hint is not None or expected_type == "episode":
+                    episode = int(bm.group(1))
+                    season = hint if hint is not None else (season or 1)
 
     kind = "unknown"
     if gtype == "episode" or season is not None or episode is not None:

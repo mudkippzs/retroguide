@@ -53,6 +53,23 @@ class TMDBClient:
             return None
         return None
 
+    @staticmethod
+    def _best(results: list[dict], name: str, name_key: str) -> dict:
+        """Pick the best search hit, not just the first.
+
+        TMDB's first result can be a same-named remake/revival (e.g. the
+        2026 "Scrubs" outranks the 2001 original on recency). Prefer the
+        closest name match; break ties by popularity so the well-known
+        original wins over a same-named newcomer.
+        """
+        from rapidfuzz import fuzz
+
+        def score(r: dict) -> tuple:
+            sim = fuzz.token_set_ratio(
+                (name or "").lower(), (r.get(name_key) or "").lower())
+            return (sim, r.get("popularity") or 0.0, r.get("vote_count") or 0)
+        return max(results, key=score)
+
     # -- movies -------------------------------------------------------------
     def movie(self, name: str, year: int | None) -> TitleMeta | None:
         params = {"query": name}
@@ -61,7 +78,7 @@ class TMDBClient:
         res = self._get("/search/movie", **params)
         if not res or not res.get("results"):
             return None
-        m = res["results"][0]
+        m = self._best(res["results"][:8], name, "title")
         meta = TitleMeta(
             tmdb_id=m.get("id"),
             overview=m.get("overview") or None,
@@ -86,7 +103,7 @@ class TMDBClient:
         res = self._get("/search/tv", **params)
         if not res or not res.get("results"):
             return None
-        s = res["results"][0]
+        s = self._best(res["results"][:8], name, "name")
         meta = TitleMeta(
             tmdb_id=s.get("id"),
             overview=s.get("overview") or None,

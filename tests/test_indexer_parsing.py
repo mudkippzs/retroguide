@@ -105,6 +105,28 @@ def test_reindex_preserves_enrichment(tmp_db, media_root, cfg):
     assert row["bucket"] == "sitcom" and row["enrich_state"] == "done"
 
 
+def test_bare_number_episode_with_season_folder(tmp_db, media_root, cfg):
+    """'01 Night of the Lizard.mkv' inside 'Season 1' parses as S01E01."""
+    _scan_cfg(cfg, media_root)
+    d = media_root / "Spider-Man - The Animated Series (1994)" / "Season 1"
+    _mk(d / "01 Night of the Lizard.mkv")
+    _mk(d / "02 The Spider Slayer.mkv")
+    Indexer(tmp_db, cfg).scan()
+    rows = tmp_db.execute(
+        "SELECT e.season, e.episode FROM episodes e "
+        "JOIN titles t ON t.id=e.title_id ORDER BY e.episode").fetchall()
+    assert [(r["season"], r["episode"]) for r in rows] == [(1, 1), (1, 2)]
+
+
+def test_codec_prefix_is_not_an_episode_number(tmp_db, media_root, cfg):
+    """'360p' style stems must not become episode 360."""
+    from tvguide.util.naming import parse_media
+    p = media_root / "Show" / "Season 1" / "360p.mkv"
+    _mk(p)
+    parsed = parse_media(p, expected_type="episode")
+    assert parsed.episode is None or parsed.episode != 360
+
+
 def test_reindex_preserves_episode_overviews(tmp_db, media_root, cfg):
     tid = add_series(tmp_db, media_root, "Spaced", "sitcom", 3)
     tmp_db.execute(

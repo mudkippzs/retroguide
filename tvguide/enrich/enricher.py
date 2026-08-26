@@ -163,12 +163,25 @@ class Enricher:
         score = fuzz.token_set_ratio(_sort(local), _sort(remote))
         return score >= _MATCH_MIN
 
+    @staticmethod
+    def _year_ok(local_year: int | None, remote_year: int | None) -> bool:
+        """Reject matches whose year contradicts a known local year — the
+        classic poison case is a same-named remake/revival (Scrubs 2001 vs
+        Scrubs 2026). Unknown years on either side can't contradict."""
+        if not local_year or not remote_year:
+            return True
+        return abs(int(local_year) - int(remote_year)) <= 2
+
     def _enrich_movie(self, row, use_llm: bool) -> bool:
         """Return True when useful metadata was written."""
         meta = self.tmdb.movie(row["name"], row["year"]) if self.tmdb.enabled else None
         if meta and not self._name_ok(row["name"], meta.name):
             log.info("rejecting low-confidence TMDB movie match %r -> %r",
                      row["name"], meta.name)
+            meta = None
+        elif meta and not self._year_ok(row["year"], meta.year):
+            log.info("rejecting year-conflict TMDB movie match %r (%s) -> %r (%s)",
+                     row["name"], row["year"], meta.name, meta.year)
             meta = None
 
         wrote = False
@@ -211,6 +224,11 @@ class Enricher:
         if meta and not self._name_ok(row["name"], meta.name):
             log.info("rejecting low-confidence %s match %r -> %r",
                      provider, row["name"], meta.name)
+            meta = None
+            provider = None
+        elif meta and not self._year_ok(row["year"], meta.year):
+            log.info("rejecting year-conflict %s match %r (%s) -> %r (%s)",
+                     provider, row["name"], row["year"], meta.name, meta.year)
             meta = None
             provider = None
 
