@@ -383,9 +383,9 @@ class Enricher:
                 blurb = self.llm.episode_blurb(ep["show"], ep["name"], ov)
             blurb = blurb or _fallback_blurb(ov, None)
             if blurb:
+                # Only the catalog row: programs.blurb belongs to the
+                # scheduler, which prefers the real provider synopsis.
                 self.conn.execute("UPDATE episodes SET blurb=? WHERE id=?", (blurb, ep["id"]))
-                self.conn.execute(
-                    "UPDATE programs SET blurb=? WHERE episode_id=?", (blurb, ep["id"]))
             done += 1
             if done % 5 == 0:
                 self.conn.commit()
@@ -398,9 +398,6 @@ class Enricher:
             blurb = blurb or _fallback_blurb(mv["overview"], mv["cast_json"])
             if blurb:
                 self.conn.execute("UPDATE titles SET blurb=? WHERE id=?", (blurb, mv["id"]))
-                self.conn.execute(
-                    "UPDATE programs SET blurb=? WHERE title_id=? AND kind='movie'",
-                    (blurb, mv["id"]))
             done += 1
             if done % 5 == 0:
                 self.conn.commit()
