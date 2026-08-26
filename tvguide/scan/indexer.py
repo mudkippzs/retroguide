@@ -253,6 +253,17 @@ class Indexer:
             )
             if r["sort_name"]
         }
+        # Keep episode-level enrichment (name/overview/blurb) too — it is
+        # expensive API data and a reindex must not silently drop it.
+        saved_episodes = {
+            (self._meta_key(r["tname"]), r["season"], r["episode"]):
+                (r["name"], r["overview"], r["blurb"])
+            for r in self.conn.execute(
+                "SELECT e.season, e.episode, e.name, e.overview, e.blurb, "
+                "t.name AS tname FROM episodes e "
+                "JOIN titles t ON t.id = e.title_id"
+            )
+        }
         self.conn.execute("DELETE FROM programs")
         self.conn.execute("DELETE FROM playheads")
         self.conn.execute("DELETE FROM episodes")
@@ -273,6 +284,7 @@ class Indexer:
         self._finalize_orders()
         self._restore_playheads(saved_playheads)
         self._restore_title_meta(saved_titles)
+        self._restore_episode_meta(saved_episodes)
         self._apply_bucket_overrides()
         progress("Reindex complete", total, total)
         return stats
@@ -304,6 +316,30 @@ class Indexer:
                  meta["year"], meta["enrich_state"], row["id"]),
             )
         self.conn.commit()
+
+    def _restore_episode_meta(self, saved: dict[tuple[str, int, int], tuple]) -> None:
+        """Re-apply episode name/overview/blurb to rebuilt episodes, matched
+        by (punctuation-insensitive title key, season, episode)."""
+        if not saved:
+            return
+        restored = 0
+        for row in self.conn.execute(
+                "SELECT e.id, e.season, e.episode, t.name AS tname "
+                "FROM episodes e JOIN titles t ON t.id = e.title_id"):
+            meta = saved.get(
+                (self._meta_key(row["tname"]), row["season"], row["episode"]))
+            if not meta:
+                continue
+            name, overview, blurb = meta
+            self.conn.execute(
+                "UPDATE episodes SET name=COALESCE(?, name), "
+                "overview=COALESCE(?, overview), blurb=COALESCE(?, blurb) "
+                "WHERE id=?",
+                (name, overview, blurb, row["id"]),
+            )
+            restored += 1
+        self.conn.commit()
+        log.info("reindex: restored enrichment for %d episodes", restored)
 
     def _apply_bucket_overrides(self) -> None:
         """Config-declared bucket fixes win over heuristics and enrichers."""

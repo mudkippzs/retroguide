@@ -6,6 +6,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable
+from types import SimpleNamespace
 
 from rapidfuzz import fuzz
 
@@ -84,6 +85,7 @@ class Enricher:
                 self.conn.commit()
                 progress(f"Enriching {row['name'][:42]}", i + 1, total)
         merged = self._merge_series_by_tmdb()
+        self._backfill_episode_overviews(progress)
         from .tagging import backfill as _tag_backfill
         _tag_backfill(self.conn)
         # Config-declared bucket fixes win over heuristic/LLM classification.
@@ -277,6 +279,47 @@ class Enricher:
                 (info.get("name"), info.get("overview"), time.time(),
                  title_id, season, ep_num),
             )
+
+    def _backfill_episode_overviews(self, progress: ProgressCb = _noop) -> int:
+        """Fill episode names/overviews for series whose title enrichment is
+        already done but whose episodes are missing copy (e.g. after a
+        reindex, or an earlier run without provider access)."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT t.id, t.name, t.year, t.tmdb_id FROM titles t "
+            "JOIN episodes e ON e.title_id = t.id "
+            "WHERE t.kind='series' AND (e.overview IS NULL OR e.overview='')"
+        ).fetchall()
+        filled = 0
+        for i, row in enumerate(rows):
+            try:
+                before = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM episodes "
+                    "WHERE title_id=? AND overview IS NOT NULL AND overview!=''",
+                    (row["id"],)).fetchone()["n"]
+                meta = None
+                provider = None
+                if row["tmdb_id"]:
+                    meta = SimpleNamespace(tmdb_id=row["tmdb_id"],
+                                           name=row["name"])
+                    provider = "tmdb"
+                self._enrich_episodes(row["id"], row["name"], row["year"],
+                                      meta, provider)
+                after = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM episodes "
+                    "WHERE title_id=? AND overview IS NOT NULL AND overview!=''",
+                    (row["id"],)).fetchone()["n"]
+                filled += max(0, after - before)
+            except Exception as exc:
+                log.warning("episode backfill failed for %s: %s",
+                            row["name"], exc)
+            if i % 5 == 0:
+                self.conn.commit()
+                progress(f"Episode overviews: {row['name'][:36]}",
+                         i + 1, len(rows))
+        self.conn.commit()
+        log.info("episode overview backfill: %d episodes across %d series",
+                 filled, len(rows))
+        return filled
 
     # -- program blurbs ----------------------------------------------------
     def write_program_blurbs(self, progress: ProgressCb = _noop) -> int:

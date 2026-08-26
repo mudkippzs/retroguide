@@ -105,6 +105,23 @@ def test_reindex_preserves_enrichment(tmp_db, media_root, cfg):
     assert row["bucket"] == "sitcom" and row["enrich_state"] == "done"
 
 
+def test_reindex_preserves_episode_overviews(tmp_db, media_root, cfg):
+    tid = add_series(tmp_db, media_root, "Spaced", "sitcom", 3)
+    tmp_db.execute(
+        "UPDATE episodes SET overview='Tim and Daisy pretend to be a couple.', "
+        "blurb='bb' WHERE title_id=? AND season=1 AND episode=1", (tid,))
+    tmp_db.commit()
+    Indexer(tmp_db, cfg).reindex_from_db()
+    row = tmp_db.execute(
+        "SELECT e.overview, e.blurb, e.name FROM episodes e "
+        "JOIN titles t ON t.id=e.title_id "
+        "WHERE t.name='Spaced' AND e.season=1 AND e.episode=1").fetchone()
+    assert row is not None
+    assert row["overview"] == "Tim and Daisy pretend to be a couple."
+    assert row["blurb"] == "bb"
+    assert row["name"]  # episode name survived too
+
+
 def test_bucket_overrides_applied_on_scan(tmp_db, media_root, cfg):
     _scan_cfg(cfg, media_root)
     cfg.bucket_overrides = {"Father Ted BoxSet": "sitcom"}
