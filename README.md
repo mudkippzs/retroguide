@@ -41,7 +41,17 @@ reruns, no licensing — and it grows on its own as you add to your collection.
   fullscreen/aspect controls, **audio-track selection** (defaults to English),
   **subtitles** toggle, and per-era **CRT** + **black-&-white** picture effects.
 - **Two guide views** — the classic vertical "TV Guide magazine" listing
-  (`time — Title: subtitle / blurb`) and a horizontal grid EPG, both live.
+  (`time — Title: subtitle / blurb`) and a horizontal grid EPG, both live and
+  both auto-following the current time.
+- **Binge mode** — flip from **TV** to **Binge** and browse the whole catalog
+  (series → seasons → episodes, or films) as a searchable tree. Build a queue
+  by adding episodes, whole seasons, entire series or films; shuffle it, save
+  it, load it back, or roll a **theme-random** queue from a genre/bucket.
+  Playback supports **random** and **repeat** toggles.
+- **Scheduling controls** — right-click any series in the Binge library to
+  **start a show from a later season** (e.g. skip to S03) or **pin/block it on
+  channels** (only on Comedy Central, never on ToonWorld…). Rules persist
+  across rebuilds; clear them from the same menu.
 - **LAN + remote streaming** — broadcast your channels to any browser on the
   network (or anywhere, over Tailscale/VPN). HLS for Apple devices, low-latency
   MP4 for everyone else. See [Watch from another device](#watch-from-another-device).
@@ -151,6 +161,11 @@ The same pipeline is scriptable:
   late-night content belongs to the previous day's listings.
 - **Channels** can be renamed and given logo bugs under `[channels]` /
   `[channel_logos]`; their day-parts are defined in `tvguide/schedule/dayparts.py`.
+- **Mis-classified shows** can be re-bucketed under `[bucket_overrides]`
+  (`"3rd Rock from the Sun" = "sitcom"`), and cryptic release folders can be
+  mapped to their real title under `[title_aliases]`
+  (`"SUPERMAN T A S" = "Superman: The Animated Series"`). Both survive
+  reindexes.
 - The catalog/schedule live in a SQLite DB under your platform data dir
   (e.g. `~/.local/share/RetroGuide/retroguide.db`); logs sit alongside it.
 
