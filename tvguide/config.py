@@ -91,6 +91,15 @@ class StreamConfig:
     hls: bool = True
     # Dynamic loudness normalization so quiet/loud rips don't jar on tune-in.
     normalize_audio: bool = True
+    # Live HLS sliding window, in 4s segments. 6 ≈ 24s (just boundary
+    # smoothing); 450 ≈ 30 min of pause/rewind on the native scrubber.
+    # delete_segments keeps disk bounded to the window.
+    hls_list_size: int = 6
+    # ROAMER-VOD: minutes an on-demand session may sit idle before its
+    # transcode cache is reaped, and where session dirs live
+    # (empty = <data dir>/vod). Disk, not tmpfs: a film cache outgrows RAM.
+    vod_idle_min: int = 45
+    vod_dir: str = ""
 
 
 @dataclass
