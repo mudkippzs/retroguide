@@ -52,7 +52,7 @@ header{display:flex;align-items:center;gap:10px;
   border-radius:7px;padding:5px 4px;font-size:11px;font-family:var(--font)}
 .tg{background:var(--panel2);color:var(--muted);border:1px solid var(--border);
   border-radius:7px;padding:5px 8px;font-size:11px;font-weight:800;letter-spacing:1px}
-.tg.on{color:#06121a;background:var(--accent);border-color:var(--accent)}
+.tg.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
 
 /* ---- main + tab bar ---- */
 main{flex:1;min-height:0;position:relative}
@@ -91,7 +91,7 @@ html[data-bw="on"] .screen video{filter:grayscale(1) contrast(1.08) brightness(1
 .vtools button{width:38px;height:38px;border-radius:10px;font-size:10px;
   font-weight:800;letter-spacing:.5px;background:rgba(14,21,33,.82);
   color:var(--text);border:1px solid var(--border);backdrop-filter:blur(4px)}
-.vtools button.on{color:#06121a;background:var(--accent);border-color:var(--accent)}
+.vtools button.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
 
 .nowcard{margin-top:12px;background:linear-gradient(180deg,var(--panel2),var(--panel));
   border:1px solid var(--border);border-radius:14px;padding:14px 16px}
@@ -131,7 +131,7 @@ html[data-bw="on"] .screen video{filter:grayscale(1) contrast(1.08) brightness(1
   padding:14px 4px 5px}
 .g-row{display:flex;gap:11px;padding:9px 8px;border-radius:10px;
   border:1px solid transparent}
-.g-row.now{background:rgba(255,94,138,.07);border-color:var(--now)}
+.g-row.now{background:var(--now-wash);border-color:var(--now)}
 .g-row .gt{font-family:var(--mono);font-size:11.5px;color:var(--muted);
   width:44px;flex:0 0 auto;padding-top:1px}
 .g-row.now .gt{color:var(--now)}
@@ -154,7 +154,7 @@ html[data-bw="on"] .screen video{filter:grayscale(1) contrast(1.08) brightness(1
 .seg button{flex:1;background:var(--panel2);border:1px solid var(--border);
   color:var(--muted);font-size:10.5px;font-weight:800;letter-spacing:1.5px;
   padding:8px 0;border-radius:9px;font-family:var(--font)}
-.seg button.on{color:#06121a;background:var(--accent);border-color:var(--accent)}
+.seg button.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
 .b-row{display:flex;align-items:center;gap:11px;padding:11px 10px;
   border-radius:11px;border:1px solid transparent;cursor:pointer}
 .b-row:active{background:var(--panel2)}
@@ -174,10 +174,10 @@ html[data-bw="on"] .screen video{filter:grayscale(1) contrast(1.08) brightness(1
 .qtools button{background:var(--panel2);border:1px solid var(--border);
   color:var(--text);font-size:10px;font-weight:800;letter-spacing:.5px;
   padding:8px 10px;border-radius:9px;font-family:var(--font)}
-.qtools button.on{color:#06121a;background:var(--accent);border-color:var(--accent)}
-.qtools button.play{background:var(--accent);color:#06121a;border-color:var(--accent)}
-.qbtn{width:34px;height:30px;border-radius:8px;background:var(--panel2);
-  border:1px solid var(--border);color:var(--muted);font-size:13px;flex:0 0 auto}
+.qtools button.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
+.qtools button.play{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+.qbtn{width:44px;height:44px;border-radius:10px;background:var(--panel2);
+  border:1px solid var(--border);color:var(--muted);font-size:15px;flex:0 0 auto}
 
 /* ---- VOD player overlay ---- */
 .pwrap{position:fixed;inset:0;z-index:40;background:#000;display:flex;
@@ -197,7 +197,7 @@ html[data-bw="on"] .screen video{filter:grayscale(1) contrast(1.08) brightness(1
 .pbtn{width:38px;height:38px;border-radius:10px;background:rgba(14,21,33,.82);
   color:var(--text);border:1px solid var(--border);font-size:14px;font-weight:800;
   backdrop-filter:blur(4px)}
-.pbtn.on{color:#06121a;background:var(--accent);border-color:var(--accent)}
+.pbtn.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
 .pstatus{position:absolute;left:12px;bottom:calc(52px + env(safe-area-inset-bottom));
   z-index:6;font-size:10.5px;font-family:var(--mono);color:var(--accent);
   background:rgba(14,21,33,.82);border:1px solid var(--border);
@@ -216,7 +216,7 @@ html[data-bw="on"] .screen video{filter:grayscale(1) contrast(1.08) brightness(1
   border:1px solid var(--border);color:var(--text);font-size:14.5px;
   font-family:var(--font);padding:13px 14px;border-radius:12px;margin-top:8px}
 .sheet button.accent{background:var(--accent);border-color:var(--accent);
-  color:#06121a;font-weight:800}
+  color:var(--on-accent);font-weight:800}
 .sheet button.cancel{background:none;border-color:transparent;color:var(--muted);
   text-align:center}
 .toast{position:fixed;left:50%;bottom:calc(86px + env(safe-area-inset-bottom));

@@ -74,7 +74,7 @@ header{display:flex;align-items:center;gap:14px;padding:12px 18px;
 .tg-btn{background:var(--panel2);color:var(--muted);border:1px solid var(--border);
   border-radius:7px;padding:5px 9px;font-size:11px;font-weight:800;letter-spacing:1px;
   cursor:pointer}
-.tg-btn.on{color:#06121a;background:var(--accent);border-color:var(--accent);
+.tg-btn.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent);
   box-shadow:0 0 10px var(--bloom)}
 
 /* ---- main layout ---- */
@@ -144,7 +144,7 @@ main.side-open .side{flex:0 0 var(--side-w);width:var(--side-w);opacity:1;
   border-right:0;border-radius:10px 0 0 10px;padding:14px 8px;font-size:12px;
   font-weight:800;letter-spacing:1px;cursor:pointer;writing-mode:vertical-rl;
   text-orientation:mixed;box-shadow:-6px 0 20px rgba(0,0,0,.35);display:none}
-.sidetab:hover{background:var(--accent);color:#06121a}
+.sidetab:hover{background:var(--accent);color:var(--on-accent)}
 body.side-closed .sidetab{display:block}
 .panel{background:var(--panel);border:1px solid var(--border);border-radius:14px;
   display:flex;flex-direction:column;min-height:0;overflow:hidden}
@@ -177,7 +177,7 @@ body.side-closed .sidetab{display:block}
 .daypart{font-size:10px;letter-spacing:2px;font-weight:800;color:var(--accent);
   padding:14px 8px 5px}
 .g-row{display:flex;gap:11px;padding:8px;border-radius:9px;border:1px solid transparent}
-.g-row.now{background:rgba(255,94,138,.07);border-color:rgba(255,94,138,.4)}
+.g-row.now{background:var(--now-wash);border-color:rgba(255,94,138,.4)}
 .g-row .gt{font-family:"JetBrains Mono",monospace;font-size:12px;color:var(--muted);
   width:46px;flex:0 0 auto;padding-top:1px}
 .g-row.now .gt{color:var(--now)}
@@ -196,7 +196,7 @@ body.side-closed .sidetab{display:block}
 .vb{background:transparent;border:1px solid var(--border);color:var(--muted);
   font-size:9px;font-weight:800;letter-spacing:1px;padding:3px 8px;border-radius:6px;
   cursor:pointer}
-.vb.on{color:#06121a;background:var(--accent);border-color:var(--accent)}
+.vb.on{color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
 
 /* ---- timeline / EPG grid ---- */
 .gridwrap{flex:1 1 auto;overflow:auto;position:relative}

@@ -17,6 +17,10 @@ TOKENS_CSS = r"""
   --mono:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;
   --scan:.16;        /* scanline strength */
   --bloom:rgba(54,224,200,.08);
+  /* text/icons drawn directly on top of --accent */
+  --on-accent:#06121a;
+  /* translucent wash behind the ON AIR row/now accents */
+  --now-wash:rgba(255,94,138,.07);
 }
 /* 70s: warm amber, woodgrain dark, serif, heavy glass */
 html[data-era="70s"]{
