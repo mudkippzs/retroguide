@@ -1,0 +1,18 @@
+# RetroGuide stream server (ROAMER): live channels + binge VOD to browsers.
+# User service — with loginctl linger enabled it starts at boot and stays up
+# with no login session. Install via deploy/install.sh.
+[Unit]
+Description=RetroGuide stream server (LAN/Tailscale live + binge)
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/Code/tvguide
+ExecStart=%h/Code/tvguide/.venv/bin/python -m tvguide.cli serve
+Restart=always
+RestartSec=3
+# Transcodes are the point, but they shouldn't starve the desktop.
+Nice=5
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,16 @@
+# RetroGuide nightly pipeline: weave new files in and keep the 7-day grid
+# full so the stream never runs dry while the host is unattended.
+# Runs on retroguide-schedule.timer. Enrichment (TVmaze/LLM blurbs) stays a
+# manual step — this is deliberately fast and quiet.
+[Unit]
+Description=RetroGuide nightly scan + schedule rebuild
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Code/tvguide
+ExecStart=%h/Code/tvguide/.venv/bin/python -m tvguide.cli scan
+ExecStart=%h/Code/tvguide/.venv/bin/python -m tvguide.cli probe
+ExecStart=%h/Code/tvguide/.venv/bin/python -m tvguide.cli schedule
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

@@ -1,0 +1,9 @@
+[Unit]
+Description=RetroGuide nightly scan + schedule rebuild
+
+[Timer]
+OnCalendar=*-*-* 03:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target
