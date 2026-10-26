@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from dataclasses import dataclass
 
-from .util.media_ok import program_playable
+from .util.media_ok import PLAYABLE_SQL, file_exists, program_playable
 
 
 @dataclass
@@ -197,6 +198,219 @@ def get_title_details(conn: sqlite3.Connection, title_id: int,
 
 def has_schedule(conn: sqlite3.Connection) -> bool:
     return conn.execute("SELECT COUNT(*) FROM programs").fetchone()[0] > 0
+
+
+# ----------------------------------------------------------------------
+# ROAMER: catalog browsing + watch positions (mobile binge mode)
+# ----------------------------------------------------------------------
+
+def episode_key(episode_id: int) -> str:
+    return f"ep:{episode_id}"
+
+
+def film_key(title_id: int) -> str:
+    return f"film:{title_id}"
+
+
+def get_watch(conn: sqlite3.Connection, key: str) -> tuple[float, float] | None:
+    """(position, duration) for a watch key, or None if never started."""
+    row = conn.execute(
+        "SELECT position, duration FROM watch_positions WHERE key=?",
+        (key,)).fetchone()
+    return (float(row["position"]), float(row["duration"])) if row else None
+
+
+def set_watch(conn: sqlite3.Connection, key: str, position: float,
+              duration: float) -> None:
+    conn.execute(
+        "INSERT INTO watch_positions(key, position, duration, updated_at) "
+        "VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET "
+        "position=excluded.position, duration=excluded.duration, "
+        "updated_at=excluded.updated_at",
+        (key, float(position), float(duration), time.time()))
+
+
+def _watched_map(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
+    return {r["key"]: (float(r["position"]), float(r["duration"]))
+            for r in conn.execute("SELECT key, position, duration "
+                                  "FROM watch_positions")}
+
+
+def _is_watched(pos: float | None, dur: float | None) -> bool:
+    """Finished when past 90% or inside the last minute."""
+    if not pos or not dur or dur <= 0:
+        return False
+    return pos >= 0.9 * dur or (dur - pos) <= 60
+
+
+def catalog_series(conn: sqlite3.Connection) -> list[dict]:
+    """All series with playable-episode and watched counts for the binge list.
+
+    Counts are probe-based (no per-file stat) so the list endpoint stays fast
+    over network mounts; existence is re-verified at play time.
+    """
+    watched = _watched_map(conn)
+    rows = conn.execute(
+        "SELECT t.id, t.name, t.year, t.bucket, t.genres, "
+        "       COUNT(e.id) AS n_eps, "
+        "       SUM(CASE WHEN m.id IS NOT NULL AND " + PLAYABLE_SQL +
+        "           THEN 1 ELSE 0 END) AS n_play "
+        "FROM titles t "
+        "JOIN episodes e ON e.title_id=t.id "
+        "LEFT JOIN media_files m ON m.id=e.file_id "
+        "WHERE t.kind='series' "
+        "GROUP BY t.id ORDER BY t.sort_name COLLATE NOCASE, t.name"
+    ).fetchall()
+    out = []
+    for r in rows:
+        n_watched = 0
+        for (ep_id,) in conn.execute(
+                "SELECT id FROM episodes WHERE title_id=?", (r["id"],)):
+            pos, dur = watched.get(episode_key(ep_id), (None, None))
+            if _is_watched(pos, dur):
+                n_watched += 1
+        try:
+            genres = json.loads(r["genres"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            genres = []
+        out.append({
+            "id": r["id"], "name": r["name"], "year": r["year"],
+            "bucket": r["bucket"], "genres": genres,
+            "n_episodes": r["n_eps"], "n_playable": int(r["n_play"] or 0),
+            "n_watched": n_watched,
+        })
+    return out
+
+
+def catalog_movies(conn: sqlite3.Connection) -> list[dict]:
+    """All films with duration and watch state for the binge list."""
+    watched = _watched_map(conn)
+    rows = conn.execute(
+        "SELECT t.id, t.name, t.year, t.genres, m.duration_sec, "
+        "       m.probe_state, m.video_codec, m.path "
+        "FROM titles t JOIN media_files m ON m.id=t.movie_file_id "
+        "WHERE t.kind='movie' ORDER BY t.sort_name COLLATE NOCASE, t.name"
+    ).fetchall()
+    out = []
+    for r in rows:
+        playable = program_playable(r["path"], r["probe_state"],
+                                    r["duration_sec"], r["video_codec"])
+        pos, dur = watched.get(film_key(r["id"]), (None, None))
+        try:
+            genres = json.loads(r["genres"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            genres = []
+        out.append({
+            "id": r["id"], "name": r["name"], "year": r["year"],
+            "genres": genres, "duration": r["duration_sec"],
+            "playable": playable,
+            "position": pos if pos and not _is_watched(pos, dur) else None,
+            "watched": _is_watched(pos, dur),
+        })
+    return out
+
+
+def series_detail(conn: sqlite3.Connection, title_id: int) -> dict | None:
+    """Series -> seasons -> episodes with playability + resume positions."""
+    t = conn.execute(
+        "SELECT id, name, year, overview, genres FROM titles "
+        "WHERE id=? AND kind='series'", (title_id,)).fetchone()
+    if t is None:
+        return None
+    watched = _watched_map(conn)
+    rows = conn.execute(
+        "SELECT e.id, e.season, e.episode, e.name, e.overview, "
+        "       m.duration_sec, m.probe_state, m.video_codec, m.path "
+        "FROM episodes e LEFT JOIN media_files m ON m.id=e.file_id "
+        "WHERE e.title_id=? "
+        "ORDER BY CASE WHEN e.season=0 THEN 1 ELSE 0 END, e.abs_order, "
+        "         e.episode", (title_id,)).fetchall()
+    seasons: dict[int, list] = {}
+    for r in rows:
+        playable = program_playable(r["path"], r["probe_state"],
+                                    r["duration_sec"], r["video_codec"])
+        pos, dur = watched.get(episode_key(r["id"]), (None, None))
+        seasons.setdefault(r["season"], []).append({
+            "id": r["id"], "episode": r["episode"],
+            "name": r["name"] or "", "overview": r["overview"] or "",
+            "duration": r["duration_sec"], "playable": playable,
+            "position": pos if pos and not _is_watched(pos, dur) else None,
+            "watched": _is_watched(pos, dur),
+        })
+    try:
+        genres = json.loads(t["genres"] or "[]")
+    except (json.JSONDecodeError, TypeError):
+        genres = []
+    return {
+        "id": t["id"], "name": t["name"], "year": t["year"],
+        "overview": t["overview"] or "", "genres": genres,
+        "seasons": [{"season": s, "episodes": eps}
+                    for s, eps in sorted(seasons.items())],
+    }
+
+
+def episode_play_info(conn: sqlite3.Connection, episode_id: int) -> dict | None:
+    """Resolve an episode to a playable file for VOD, or None."""
+    r = conn.execute(
+        "SELECT e.id, e.title_id, e.season, e.episode, e.name AS ename, "
+        "       t.name AS tname, m.path, m.duration_sec, m.probe_state, "
+        "       m.video_codec "
+        "FROM episodes e JOIN media_files m ON m.id=e.file_id "
+        "JOIN titles t ON t.id=e.title_id "
+        f"WHERE e.id=? AND {PLAYABLE_SQL}", (episode_id,)).fetchone()
+    if r is None or not file_exists(r["path"]):
+        return None
+    sub = f"S{r['season']:02d}E{r['episode']:02d}"
+    if r["ename"]:
+        sub += f" — {r['ename']}"
+    return {"key": episode_key(r["id"]), "path": r["path"],
+            "title": r["tname"], "subtitle": sub,
+            "duration": float(r["duration_sec"]), "title_id": r["title_id"],
+            "episode_id": r["id"]}
+
+
+def film_play_info(conn: sqlite3.Connection, title_id: int) -> dict | None:
+    """Resolve a film to a playable file for VOD, or None."""
+    r = conn.execute(
+        "SELECT t.id, t.name, t.year, m.path, m.duration_sec, m.probe_state, "
+        "       m.video_codec "
+        "FROM titles t JOIN media_files m ON m.id=t.movie_file_id "
+        f"WHERE t.id=? AND t.kind='movie' AND {PLAYABLE_SQL}",
+        (title_id,)).fetchone()
+    if r is None or not file_exists(r["path"]):
+        return None
+    sub = f"({r['year']})" if r["year"] else ""
+    return {"key": film_key(r["id"]), "path": r["path"], "title": r["name"],
+            "subtitle": sub, "duration": float(r["duration_sec"]),
+            "title_id": r["id"], "episode_id": None}
+
+
+def next_episode_info(conn: sqlite3.Connection, episode_id: int) -> dict | None:
+    """The next playable episode after this one (binge auto-advance).
+
+    Ordering matches the desktop queue: broadcast order, specials last.
+    """
+    cur = conn.execute(
+        "SELECT title_id, season, abs_order, episode FROM episodes "
+        "WHERE id=?", (episode_id,)).fetchone()
+    if cur is None:
+        return None
+    rows = conn.execute(
+        "SELECT e.id FROM episodes e "
+        "JOIN media_files m ON m.id=e.file_id "
+        f"WHERE e.title_id=? AND {PLAYABLE_SQL} "
+        "ORDER BY CASE WHEN e.season=0 THEN 1 ELSE 0 END, e.abs_order, "
+        "         e.episode", (cur["title_id"],)).fetchall()
+    ids = [r["id"] for r in rows]
+    if episode_id not in ids:
+        return None
+    nxt = ids.index(episode_id) + 1
+    while nxt < len(ids):
+        info = episode_play_info(conn, ids[nxt])
+        if info is not None:
+            return info
+        nxt += 1
+    return None
 
 
 def catalog_integrity(conn: sqlite3.Connection) -> dict[str, int]:

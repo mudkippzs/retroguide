@@ -148,6 +148,15 @@ CREATE TABLE IF NOT EXISTS channel_rules (
     UNIQUE(channel_slug, title_id),
     FOREIGN KEY(title_id) REFERENCES titles(id)
 );
+
+-- ROAMER: per-item playback position for cross-device resume ('ep:<id>' /
+-- 'film:<title_id>'). Written by the stream server as clients report progress.
+CREATE TABLE IF NOT EXISTS watch_positions (
+    key           TEXT PRIMARY KEY,         -- 'ep:<episode_id>' | 'film:<title_id>'
+    position      REAL NOT NULL,
+    duration      REAL NOT NULL,
+    updated_at    REAL NOT NULL
+);
 """
 
 
