@@ -101,3 +101,12 @@ hls = true
 # Smooth out loudness jumps between programs/channels (dynaudnorm). Slight
 # extra CPU on each ffmpeg; turn off if you prefer raw rip levels.
 normalize_audio = true
+# Live HLS sliding window in 4s segments = how far an Apple device can pause /
+# rewind live TV on the native scrubber. 6 ≈ 24s (smoothing only); 450 ≈ 30min.
+# Disk per live channel stays bounded to the window.
+hls_list_size = 6
+# ROAMER-VOD (binge mode on the mobile web app): minutes an on-demand session
+# may idle before its transcode cache is reaped, and where session dirs live
+# (empty = <data dir>/vod). Keep it on disk, not tmpfs.
+vod_idle_min = 45
+vod_dir = ""

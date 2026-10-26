@@ -88,7 +88,11 @@ class HlsSession:
         if offset > 1:
             cmd += ["-ss", f"{offset:.3f}"]
         cmd += ["-re", "-i", path, *post,
-            "-f", "hls", "-hls_time", "4", "-hls_list_size", "6",
+            "-f", "hls", "-hls_time", "4",
+            # Sliding window size = the live pause/rewind budget on the
+            # native scrubber (4s segments; 450 ≈ 30 min). delete_segments
+            # keeps disk bounded to the window.
+            "-hls_list_size", str(max(3, self.cfg.stream.hls_list_size)),
             # No omit_endlist: ffmpeg writes #EXT-X-ENDLIST when the program
             # ends, which the page uses as the cue to roll to the next show.
             "-hls_flags", "delete_segments+independent_segments",
