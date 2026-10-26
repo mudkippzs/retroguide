@@ -36,10 +36,12 @@ from urllib.parse import parse_qs, urlparse
 from ..config import Config
 from ..db import connect
 from .. import repo
+from ..binge import playlist
 from . import web
 from .hls import HlsManager
-from .media import encode_chain, english_audio_map
+from .media import encode_chain, english_audio_map, english_subtitle
 from .procutil import kill_proc
+from .vod import VodManager, valid_key
 
 log = logging.getLogger("tvguide.stream")
 
@@ -168,7 +170,8 @@ def _prog_dict(prog) -> dict | None:
     }
 
 
-def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
+def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager,
+                  vod: VodManager):
     class Handler(BaseHTTPRequestHandler):
         # HTTP/1.0 -> body is delimited by connection close, so we can stream
         # an unknown-length response without chunked encoding.
@@ -188,8 +191,27 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
-        def _send_json(self, obj) -> None:
-            self._send(200, json.dumps(obj).encode(), "application/json")
+        def _send_json(self, obj, code: int = 200) -> None:
+            self._send(code, json.dumps(obj).encode(), "application/json")
+
+        def _read_json(self) -> dict | None:
+            """Parse a JSON POST body; sends 400 and returns None on junk."""
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = 0
+            if n <= 0 or n > 1_000_000:
+                self._send_json({"error": "bad body"}, 400)
+                return None
+            try:
+                data = json.loads(self.rfile.read(n))
+            except (ValueError, UnicodeDecodeError):
+                self._send_json({"error": "bad json"}, 400)
+                return None
+            if not isinstance(data, dict):
+                self._send_json({"error": "bad json"}, 400)
+                return None
+            return data
 
         # -- routing -------------------------------------------------------
         def do_GET(self):  # noqa: N802
@@ -209,6 +231,18 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                     return self._api_program(path[len("/api/program/"):])
                 if path.startswith("/logo/"):
                     return self._logo(path[len("/logo/"):])
+                if path == "/api/health":
+                    return self._api_health()
+                if path == "/api/catalog":
+                    return self._api_catalog()
+                if path.startswith("/api/catalog/series/"):
+                    return self._api_series(path[len("/api/catalog/series/"):])
+                if path == "/api/queue":
+                    return self._api_queue()
+                if path == "/api/queue/saved":
+                    return self._api_queue_saved()
+                if path.startswith("/api/watch/"):
+                    return self._api_watch_get(path[len("/api/watch/"):])
                 parts = [p for p in path.split("/") if p]
                 if len(parts) >= 2 and parts[0] == "c":
                     slug = parts[1]
@@ -222,10 +256,28 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                         return self._hls_playlist(slug, subs)
                     if _SEG_RE.match(parts[2]):
                         return self._hls_segment(slug, parts[2])
+                if len(parts) == 3 and parts[0] == "v":
+                    return self._vod_file(parts[1], parts[2])
                 self._send(404, b"Not found", "text/plain")
             except (BrokenPipeError, ConnectionResetError):
                 pass
             except Exception:  # noqa: BLE001 - never let a worker thread die silently
+                log.exception("request handler error for %s", self.path)
+
+        def do_POST(self):  # noqa: N802
+            path = urlparse(self.path).path
+            try:
+                if path == "/api/vod/play":
+                    return self._api_vod_play()
+                if path == "/api/watch":
+                    return self._api_watch_set()
+                if path.startswith("/api/queue/"):
+                    return self._api_queue_action(
+                        path[len("/api/queue/"):])
+                self._send(404, b"Not found", "text/plain")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            except Exception:  # noqa: BLE001
                 log.exception("request handler error for %s", self.path)
 
         def _app(self, slug: str | None = None):
@@ -358,6 +410,248 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager):
                 }
             self._send_json(data)
 
+        # -- ROAMER: health / catalog / queue / vod / watch -----------------
+        def _api_health(self):
+            conn = connect()
+            try:
+                bounds = repo.schedule_bounds(conn)
+            finally:
+                conn.close()
+            self._send_json({
+                "ok": True,
+                "active_streams": state.active,
+                "max_streams": state.max_streams,
+                "schedule_end": bounds[1] if bounds else None,
+                "server_now": time.time(),
+            })
+
+        def _api_catalog(self):
+            conn = connect()
+            try:
+                data = {"series": repo.catalog_series(conn),
+                        "movies": repo.catalog_movies(conn)}
+            finally:
+                conn.close()
+            self._send_json(data)
+
+        def _api_series(self, raw_id: str):
+            try:
+                tid = int(raw_id.strip("/"))
+            except ValueError:
+                return self._send(404, b"Bad id", "text/plain")
+            conn = connect()
+            try:
+                detail = repo.series_detail(conn, tid)
+            finally:
+                conn.close()
+            if detail is None:
+                return self._send(404, b"Not found", "text/plain")
+            self._send_json(detail)
+
+        @staticmethod
+        def _queue_item_dict(it) -> dict:
+            return {"id": it.id, "kind": it.kind, "title_id": it.title_id,
+                    "season": it.season, "episode_id": it.episode_id,
+                    "label": it.label}
+
+        @staticmethod
+        def _expanded_dict(qi) -> dict:
+            key = (repo.episode_key(qi.episode_id) if qi.episode_id
+                   else repo.film_key(qi.title_id))
+            return {"key": key, "title": qi.display_title,
+                    "subtitle": qi.subtitle, "duration": qi.duration_sec}
+
+        def _api_queue(self):
+            conn = connect()
+            try:
+                items = []
+                for it in playlist.items(conn):
+                    n, secs = playlist.item_stats(conn, it)
+                    d = self._queue_item_dict(it)
+                    d.update({"n_files": n, "seconds": secs})
+                    items.append(d)
+                expanded = [self._expanded_dict(qi)
+                            for qi in playlist.expand(conn)]
+            finally:
+                conn.close()
+            self._send_json({"items": items, "expanded": expanded})
+
+        def _api_queue_saved(self):
+            conn = connect()
+            try:
+                saved = [{"name": n, "items": c, "created_at": ts}
+                         for n, c, ts in playlist.list_saved(conn)]
+            finally:
+                conn.close()
+            self._send_json({"saved": saved})
+
+        def _api_queue_action(self, action: str):
+            body = self._read_json()
+            if body is None:
+                return
+            action = action.strip("/")
+            conn = connect()
+            try:
+                if action == "add":
+                    playlist.add(conn, str(body.get("kind", "")),
+                                 int(body["title_id"]),
+                                 season=body.get("season"),
+                                 episode_id=body.get("episode_id"))
+                elif action == "remove":
+                    playlist.remove(conn, int(body["item_id"]))
+                elif action == "move":
+                    playlist.move(conn, int(body["item_id"]),
+                                  int(body.get("delta", 0)))
+                elif action == "shuffle":
+                    playlist.shuffle(conn)
+                elif action == "clear":
+                    playlist.clear(conn)
+                elif action == "save":
+                    playlist.save_as(conn, str(body.get("name", "")))
+                elif action == "load":
+                    playlist.load(conn, str(body.get("name", "")))
+                elif action == "delete":
+                    playlist.delete_saved(conn, str(body.get("name", "")))
+                elif action == "theme-random":
+                    added = playlist.theme_random(
+                        conn, tag=body.get("tag"), bucket=body.get("bucket"),
+                        kind=body.get("kind", "film"),
+                        n=int(body.get("n", 5)))
+                    return self._send_json({"added": added})
+                elif action == "next":
+                    return self._api_queue_next(conn, body)
+                else:
+                    return self._send_json({"error": "unknown action"}, 404)
+                conn.commit()
+            except (KeyError, ValueError, TypeError) as exc:
+                return self._send_json({"error": str(exc) or "bad request"},
+                                       400)
+            finally:
+                conn.close()
+            self._send_json({"ok": True})
+
+        def _api_queue_next(self, conn, body: dict):
+            """Server-side repeat/random advance so the logic stays in one
+            place (binge.playlist.next_index)."""
+            expanded = playlist.expand(conn)
+            played = {int(i) for i in body.get("played", [])
+                      if str(i).lstrip("-").isdigit()}
+            idx = playlist.next_index(
+                played, len(expanded),
+                randomize=bool(body.get("random")),
+                repeat=bool(body.get("repeat")))
+            item = self._expanded_dict(expanded[idx]) if idx is not None else None
+            return self._send_json({"index": idx, "item": item})
+
+        def _api_vod_play(self):
+            body = self._read_json()
+            if body is None:
+                return
+            conn = connect()
+            try:
+                if body.get("episode_id") is not None:
+                    info = repo.episode_play_info(conn, int(body["episode_id"]))
+                elif body.get("title_id") is not None:
+                    info = repo.film_play_info(conn, int(body["title_id"]))
+                else:
+                    return self._send_json({"error": "episode_id or title_id "
+                                            "required"}, 400)
+                if info is None:
+                    return self._send_json({"error": "not playable"}, 404)
+                kind, _si = english_subtitle(info["path"])
+                burn = bool(body.get("subs")) and kind is not None
+                key = info["key"] + ("+subs" if burn else "")
+                sess = vod.start(key, info["path"], info["duration"])
+                if sess is None:
+                    return self._send_json({"error": "server busy"}, 503)
+                pos_dur = repo.get_watch(conn, info["key"])
+                position = None
+                if pos_dur and not repo.is_watched(*pos_dur):
+                    position = pos_dur[0]
+                nxt = (repo.next_episode_info(conn, info["episode_id"])
+                       if info["episode_id"] else None)
+            finally:
+                conn.close()
+            self._send_json({
+                "key": key,
+                "url": f"/v/{key}/index.m3u8",
+                "status_url": f"/v/{key}/status",
+                "title": info["title"], "subtitle": info["subtitle"],
+                "duration": info["duration"],
+                "position": position,
+                # native = real iOS CC menu via WebVTT; burn = bitmap subs
+                # burned into a +subs variant; none = no subtitles on file.
+                "subs": "burn" if burn else ("native" if sess.has_vtt
+                                             else ("bitmap" if kind == "bitmap"
+                                                   else "none")),
+                "next": ({"episode_id": nxt["episode_id"],
+                          "title": nxt["title"], "subtitle": nxt["subtitle"]}
+                         if nxt else None),
+            })
+
+        def _vod_file(self, key: str, name: str):
+            sess = vod.get(key) if valid_key(key) else None
+            if sess is None:
+                return self._send(404, b"gone", "text/plain")
+            if name == "index.m3u8":
+                try:
+                    data = (sess.dir / "index.m3u8").read_bytes()
+                except OSError:
+                    data = None
+                ctype = "application/vnd.apple.mpegurl"
+            elif name == "status":
+                return self._send_json(sess.status())
+            else:
+                data = sess.read_file(name)
+                ctype = ("application/vnd.apple.mpegurl" if name.endswith(".m3u8")
+                         else "text/vtt" if name.endswith(".vtt")
+                         else "video/mp2t")
+            if data is None:
+                return self._send(404, b"gone", "text/plain")
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Cache-Control",
+                             "no-cache" if name.endswith(".m3u8")
+                             else "max-age=3600")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except OSError:
+                pass
+
+        def _api_watch_get(self, key: str):
+            key = key.strip("/")
+            if not valid_key(key):
+                return self._send_json({"error": "bad key"}, 400)
+            conn = connect()
+            try:
+                pos = repo.get_watch(conn, key)
+            finally:
+                conn.close()
+            self._send_json({"position": pos[0], "duration": pos[1]}
+                            if pos else {"position": None})
+
+        def _api_watch_set(self):
+            body = self._read_json()
+            if body is None:
+                return
+            key = str(body.get("key", ""))
+            if not valid_key(key):
+                return self._send_json({"error": "bad key"}, 400)
+            try:
+                position = float(body["position"])
+                duration = float(body["duration"])
+            except (KeyError, ValueError, TypeError):
+                return self._send_json({"error": "position/duration required"},
+                                       400)
+            conn = connect()
+            try:
+                repo.set_watch(conn, key, position, duration)
+            finally:
+                conn.close()
+            self._send_json({"ok": True})
+
         def _hls_playlist(self, slug: str, subs: bool = False):
             data = hls.playlist(slug, subs)
             if data is None:
@@ -482,6 +776,7 @@ class StreamServer:
         self._thread: threading.Thread | None = None
         self._state = _StreamState(cfg.stream.max_streams)
         self._hls = HlsManager(cfg, self._state)
+        self._vod = VodManager(cfg, self._state)
 
     @property
     def running(self) -> bool:
@@ -497,7 +792,7 @@ class StreamServer:
     def start(self) -> str:
         if self.running:
             return self.url()
-        handler = _make_handler(self.cfg, self._state, self._hls)
+        handler = _make_handler(self.cfg, self._state, self._hls, self._vod)
         self._httpd = ThreadingHTTPServer((self.bind, self.port), handler)
         self._httpd.daemon_threads = True
         self._thread = threading.Thread(
@@ -514,8 +809,9 @@ class StreamServer:
             self._httpd.shutdown()
             self._httpd.server_close()
             self._httpd = None
-        # Tear down HLS sessions, then reap any inflight transcodes.
+        # Tear down HLS + VOD sessions, then reap any inflight transcodes.
         self._hls.stop_all()
+        self._vod.stop_all()
         self._state.kill_all()
         self._thread = None
         log.info("stream server stopped")

@@ -236,7 +236,7 @@ def _watched_map(conn: sqlite3.Connection) -> dict[str, tuple[float, float]]:
                                   "FROM watch_positions")}
 
 
-def _is_watched(pos: float | None, dur: float | None) -> bool:
+def is_watched(pos: float | None, dur: float | None) -> bool:
     """Finished when past 90% or inside the last minute."""
     if not pos or not dur or dur <= 0:
         return False
@@ -267,7 +267,7 @@ def catalog_series(conn: sqlite3.Connection) -> list[dict]:
         for (ep_id,) in conn.execute(
                 "SELECT id FROM episodes WHERE title_id=?", (r["id"],)):
             pos, dur = watched.get(episode_key(ep_id), (None, None))
-            if _is_watched(pos, dur):
+            if is_watched(pos, dur):
                 n_watched += 1
         try:
             genres = json.loads(r["genres"] or "[]")
@@ -304,8 +304,8 @@ def catalog_movies(conn: sqlite3.Connection) -> list[dict]:
             "id": r["id"], "name": r["name"], "year": r["year"],
             "genres": genres, "duration": r["duration_sec"],
             "playable": playable,
-            "position": pos if pos and not _is_watched(pos, dur) else None,
-            "watched": _is_watched(pos, dur),
+            "position": pos if pos and not is_watched(pos, dur) else None,
+            "watched": is_watched(pos, dur),
         })
     return out
 
@@ -334,8 +334,8 @@ def series_detail(conn: sqlite3.Connection, title_id: int) -> dict | None:
             "id": r["id"], "episode": r["episode"],
             "name": r["name"] or "", "overview": r["overview"] or "",
             "duration": r["duration_sec"], "playable": playable,
-            "position": pos if pos and not _is_watched(pos, dur) else None,
-            "watched": _is_watched(pos, dur),
+            "position": pos if pos and not is_watched(pos, dur) else None,
+            "watched": is_watched(pos, dur),
         })
     try:
         genres = json.loads(t["genres"] or "[]")
