@@ -37,11 +37,15 @@ from ..config import Config
 from ..db import connect
 from .. import repo
 from ..binge import playlist
-from . import web
+from . import mobile, web
 from .hls import HlsManager
 from .media import encode_chain, english_audio_map, english_subtitle
 from .procutil import kill_proc
 from .vod import VodManager, valid_key
+
+_ICON_PATH = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
+
+_MOBILE_UA_RE = re.compile(r"iPhone|iPod|iPad|Android.*Mobile", re.I)
 
 log = logging.getLogger("tvguide.stream")
 
@@ -220,7 +224,20 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager,
             subs = parse_qs(parsed.query).get("subs", ["0"])[0] == "1"
             try:
                 if path in ("/", "/index.html"):
+                    # Phones land on ROAMER; desktops keep the HUD. /m and /d
+                    # force either surface explicitly.
+                    if _MOBILE_UA_RE.search(self.headers.get("User-Agent", "")):
+                        return self._mobile_app()
                     return self._app()
+                if path == "/m":
+                    return self._mobile_app()
+                if path == "/d":
+                    return self._app()
+                if path == "/manifest.webmanifest":
+                    return self._send(200, mobile.render_manifest(),
+                                      "application/manifest+json")
+                if path == "/icon.png":
+                    return self._icon()
                 if path == "/api/now":
                     return self._api_now()
                 if path == "/api/grid":
@@ -285,6 +302,27 @@ def _make_handler(cfg: Config, state: _StreamState, hls: HlsManager,
             page = web.render_app(slug, era=ui.era, crt=ui.crt, bw=ui.bw,
                                   hls=cfg.stream.hls)
             self._send(200, page.encode(), "text/html; charset=utf-8")
+
+        def _mobile_app(self):
+            ui = cfg.ui
+            page = mobile.render_mobile(era=ui.era, crt=ui.crt, bw=ui.bw)
+            self._send(200, page.encode(), "text/html; charset=utf-8")
+
+        def _icon(self):
+            try:
+                with open(_ICON_PATH, "rb") as fh:
+                    data = fh.read()
+            except OSError:
+                return self._send(404, b"No icon", "text/plain")
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Cache-Control", "max-age=86400")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            try:
+                self.wfile.write(data)
+            except OSError:
+                pass
 
         def _api_now(self):
             conn = connect()

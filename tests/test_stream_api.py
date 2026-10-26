@@ -129,3 +129,27 @@ def test_vod_play_unknown_and_gone(api):
     with pytest.raises(urllib.error.HTTPError) as exc:
         _get(base, "/v/ep:424242/index.m3u8")
     assert exc.value.code == 404
+
+
+def _get_ua(base, path, ua):
+    req = urllib.request.Request(base + path, headers={"User-Agent": ua})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return r.read()
+
+
+def test_mobile_pwa_surfaces(api):
+    base, _ = api
+    iphone = ("Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) "
+              "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 "
+              "Mobile/15E148 Safari/604.1")
+    desktop = ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+    m = _get_ua(base, "/", iphone).decode()
+    assert "tab-binge" in m            # ROAMER page for phones
+    d = _get_ua(base, "/", desktop).decode()
+    assert "tab-binge" not in d        # desktop HUD unchanged
+    assert "tab-binge" in _get_ua(base, "/m", desktop).decode()
+    man = json.loads(_get_ua(base, "/manifest.webmanifest", desktop))
+    assert man["display"] == "standalone" and man["start_url"] == "/m"
+    icon = _get_ua(base, "/icon.png", desktop)
+    assert icon[:4] == b"\x89PNG"
