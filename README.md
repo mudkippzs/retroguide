@@ -55,6 +55,12 @@ reruns, no licensing — and it grows on its own as you add to your collection.
 - **LAN + remote streaming** — broadcast your channels to any browser on the
   network (or anywhere, over Tailscale/VPN). HLS for Apple devices, low-latency
   MP4 for everyone else. See [Watch from another device](#watch-from-another-device).
+- **ROAMER: the phone app** — a mobile-first PWA at `/m` with LIVE, GUIDE and
+  BINGE tabs. Full binge parity with the desktop (queue building, shuffle,
+  saved lists, theme-random, repeat/random), native iOS playback (seek,
+  pause/resume, fullscreen, AirPlay, real CC via WebVTT), cross-device resume,
+  and ~30 min of live pause/rewind. Add it to your home screen and it behaves
+  like an app. See [Watch from your phone](#watch-from-your-phone).
 - **Retro skins** — 70s / 80s / 90s / 00s eras with CRT scanlines and an
   orthogonal B&W toggle, on both desktop and the web view.
 
@@ -139,6 +145,62 @@ right now**, just like real TV, with an in-page guide and channel switcher.
 
 Streaming is capped (`[stream] max_streams`, default 4 concurrent transcodes) so
 a flaky client can't overrun the host.
+
+## Watch from your phone
+
+**ROAMER** is the mobile surface: open `/m` (or just `/` — phones are routed
+there automatically) on the stream server. Three tabs:
+
+- **LIVE** — tune any channel, join mid-broadcast like real TV. On iPhone the
+  native scrubber pauses/rewinds live TV within `[stream] hls_list_size`
+  (450 × 4s segments ≈ **30 minutes** in the shipped config).
+- **GUIDE** — the magazine listing for the channel you're on, auto-scrolled to
+  what's on now.
+- **BINGE** — your whole catalog: series → seasons → episodes and films, with
+  search, watched ticks and resume markers. Tap anything to play, or build a
+  queue (add episodes/seasons/series/films, reorder, shuffle, save/load named
+  lists, 🎲 theme-random) with **repeat** and **random** toggles and
+  auto-advance. The queue is *shared with the desktop app* — build it on
+  either, play it on both.
+
+Playback is the **native iOS player** over HLS, so you get the real seek bar,
+hours-long pause/resume, fullscreen, AirPlay and Picture-in-Picture. Subtitles
+are a genuine iOS CC menu when the file has text subs (WebVTT sidecar), or
+one-tap burn-in for bitmap subs (PGS/DVD). **Aspect ratio** cycles fit → fill →
+stretch inline; **volume** is the iPhone's hardware buttons / native player
+(iOS doesn't allow web volume sliders). Progress checkpoints to the server, so
+closing Safari mid-episode and reopening — on any device — resumes where you
+left off. On-demand sessions transcode ahead of you; the "TRANSCODING AHEAD"
+pill shows how much is ready.
+
+**From anywhere (Tailscale):** with Tailscale on the host and your phone,
+
+```bash
+tailscale serve --bg --https=8443 http://127.0.0.1:8722
+```
+
+then open `https://<host>.<tailnet>.ts.net:8443/m` on the phone and use
+Safari's **Add to Home Screen** — it launches fullscreen like a native app.
+(The example uses port 8443 because 443 is often taken; any free port works.
+The serve config persists in tailscaled across reboots.)
+
+### Always-on hosting
+
+`deploy/install.sh` installs two systemd **user** services (and enables
+linger, so they start at boot and survive logout):
+
+- `retroguide-stream.service` — the stream server, `Restart=always`.
+  Check: `systemctl --user status retroguide-stream` and
+  `curl -s localhost:8722/api/health`.
+- `retroguide-schedule.timer` — nightly 03:30 `scan → probe → schedule` so the
+  7-day grid never runs dry while you're away. Check:
+  `systemctl --user list-timers retroguide-schedule.timer`.
+
+Notes for unattended weeks: keep the host awake (GNOME: *Power → automatic
+suspend off*), keep `tailscaled` enabled at boot (it is by default), and if
+the desktop app is running its own **Stream** server it already owns port 8722
+— toggle it off (or close the app) so the service can bind; the app's button
+will simply report the port as busy otherwise.
 
 ### Command line
 
