@@ -734,7 +734,7 @@ async function renderQueue(box){
       e.stopPropagation();
       await api('/api/queue/remove',{item_id:iid});
       renderBinge();
-    });
+    };
   });
 }
 
